@@ -28,6 +28,9 @@
 #include <linux/usb/composite.h>
 #include <linux/usb/functionfs.h>
 
+#include <linux/aio.h>
+#include <linux/mmu_context.h>
+
 #include <linux/poll.h>
 
 #define FUNCTIONFS_MAGIC	0xa647361 /* Chosen by a honest dice roll ;) */
@@ -363,6 +366,27 @@ struct ffs_epfile {
 
 	unsigned long			buf_len;
 	char				*buffer;
+};
+
+/*  ffs_io_data structure ***************************************************/
+
+struct ffs_io_data {
+	bool aio;
+	bool read;
+
+	struct kiocb *kiocb;
+	const struct iovec *iovec;
+	unsigned long nr_segs;
+	char __user *buf;
+	size_t len;
+
+	struct mm_struct *mm;
+	struct work_struct work;
+
+	struct ffs_epfile *epfile;
+	struct usb_ep *ep;
+	struct usb_request *req;
+	char *data;
 };
 
 static int  __must_check ffs_epfiles_create(struct ffs_data *ffs);
@@ -836,8 +860,77 @@ static void ffs_epfile_io_complete(struct usb_ep *_ep, struct usb_request *req)
 }
 
 #define MAX_BUF_LEN	4096
-static ssize_t ffs_epfile_io(struct file *file,
-			     char __user *buf, size_t len, int read)
+
+static void ffs_user_copy_worker(struct work_struct *work)
+{
+	struct ffs_io_data *io_data = container_of(work, struct ffs_io_data,
+						   work);
+	struct ffs_data *ffs = io_data->epfile->ffs;
+	int ret = io_data->req->status ? io_data->req->status :
+					 io_data->req->actual;
+
+	if (io_data->read && ret > 0) {
+		size_t left = ret, pos = 0, n;
+		unsigned long i;
+
+		if (ret > io_data->len) {
+			pr_err("More data(%d) received than intended length(%zu)\n",
+			       ret, io_data->len);
+			ret = -EOVERFLOW;
+			left = 0;
+		}
+
+		/* the submitter may be exiting: never copy into a dying mm */
+		if (left && !atomic_inc_not_zero(&io_data->mm->mm_users)) {
+			ret = -EFAULT;
+			left = 0;
+		}
+		if (left) {
+			use_mm(io_data->mm);
+			for (i = 0; i < io_data->nr_segs && left; i++) {
+				n = min_t(size_t, left,
+					  io_data->iovec[i].iov_len);
+				if (unlikely(copy_to_user(
+						io_data->iovec[i].iov_base,
+						io_data->data + pos, n))) {
+					ret = -EFAULT;
+					break;
+				}
+				pos += n;
+				left -= n;
+			}
+			unuse_mm(io_data->mm);
+			mmput(io_data->mm);
+		}
+	}
+
+	/* ffs_aio_cancel() looks the request up through kiocb->private */
+	spin_lock_irq(&ffs->eps_lock);
+	io_data->kiocb->private = NULL;
+	spin_unlock_irq(&ffs->eps_lock);
+
+	aio_complete(io_data->kiocb, ret, ret);
+
+	usb_ep_free_request(io_data->ep, io_data->req);
+	mmdrop(io_data->mm);
+	if (io_data->read)
+		kfree(io_data->iovec);
+	kfree(io_data->data);
+	kfree(io_data);
+}
+
+static void ffs_epfile_async_io_complete(struct usb_ep *_ep,
+					 struct usb_request *req)
+{
+	struct ffs_io_data *io_data = req->context;
+
+	ENTER();
+
+	INIT_WORK(&io_data->work, ffs_user_copy_worker);
+	schedule_work(&io_data->work);
+}
+
+static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 {
 	struct ffs_epfile *epfile = file->private_data;
 	struct ffs_ep *ep;
@@ -845,8 +938,11 @@ static ssize_t ffs_epfile_io(struct file *file,
 	ssize_t ret;
 	int halt;
 	size_t buffer_len = 0;
+	size_t len = io_data->len;
+	int read = io_data->read;
 
-	pr_debug("%s: len %zu, read %d\n", __func__, len, read);
+	pr_debug("%s: len %zu, read %d, aio %d\n", __func__, len, read,
+		 io_data->aio);
 
 	if (atomic_read(&epfile->error))
 		return -ENODEV;
@@ -855,6 +951,11 @@ static ssize_t ffs_epfile_io(struct file *file,
 	do {
 		spin_unlock_irq(&epfile->ffs->eps_lock);
 		mutex_unlock(&epfile->mutex);
+
+		/* the new endpoint may need a different buffer length */
+		if (data != epfile->buffer)
+			kfree(data);
+		data = NULL;
 
 first_try:
 		/* Are we still active? */
@@ -905,15 +1006,30 @@ first_try:
 
 		/* Allocate & copy */
 		if (!halt && !data) {
-
-			data = buffer_len > epfile->buf_len ?
-				kzalloc(buffer_len, GFP_KERNEL) :
-				epfile->buffer;
+			if (io_data->aio)
+				data = kzalloc(buffer_len, GFP_KERNEL);
+			else
+				data = buffer_len > epfile->buf_len ?
+					kzalloc(buffer_len, GFP_KERNEL) :
+					epfile->buffer;
 			if (unlikely(!data))
 				return -ENOMEM;
 
-			if (!read &&
-			    unlikely(__copy_from_user(data, buf, len))) {
+			if (!read && io_data->aio) {
+				size_t pos = 0;
+				unsigned long i;
+
+				for (i = 0; i < io_data->nr_segs; i++) {
+					if (unlikely(copy_from_user(data + pos,
+						     io_data->iovec[i].iov_base,
+						     io_data->iovec[i].iov_len))) {
+						ret = -EFAULT;
+						goto error;
+					}
+					pos += io_data->iovec[i].iov_len;
+				}
+			} else if (!read &&
+			    unlikely(__copy_from_user(data, io_data->buf, len))) {
 				ret = -EFAULT;
 				goto error;
 			}
@@ -943,6 +1059,38 @@ first_try:
 			usb_ep_set_halt(ep->ep);
 		spin_unlock_irq(&epfile->ffs->eps_lock);
 		ret = -EBADMSG;
+	} else if (io_data->aio) {
+		/* Fire the request and let the completion finish the iocb */
+		struct usb_request *req;
+
+		req = usb_ep_alloc_request(ep->ep, GFP_ATOMIC);
+		if (unlikely(!req)) {
+			spin_unlock_irq(&epfile->ffs->eps_lock);
+			ret = -ENOMEM;
+			goto error_mutex;
+		}
+		req->buf      = data;
+		req->length   = buffer_len;
+		req->context  = io_data;
+		req->complete = ffs_epfile_async_io_complete;
+
+		io_data->data = data;
+		io_data->ep = ep->ep;
+		io_data->req = req;
+
+		ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
+		if (unlikely(ret)) {
+			io_data->req = NULL;
+			spin_unlock_irq(&epfile->ffs->eps_lock);
+			usb_ep_free_request(ep->ep, req);
+			ret = -EIO;
+			goto error_mutex;
+		}
+		spin_unlock_irq(&epfile->ffs->eps_lock);
+		mutex_unlock(&epfile->mutex);
+
+		/* io_data and data now belong to ffs_user_copy_worker() */
+		return -EIOCBQUEUED;
 	} else {
 		/* Fire the request */
 		DECLARE_COMPLETION_ONSTACK(done);
@@ -989,7 +1137,7 @@ first_try:
 								ret, len);
 					ret = -EOVERFLOW;
 				} else if (unlikely(copy_to_user(
-						buf, data, ret))) {
+						io_data->buf, data, ret))) {
 					pr_err("Fail to copy to user len:%zd\n",
 									ret);
 					ret = -EFAULT;
@@ -998,9 +1146,10 @@ first_try:
 		}
 	}
 
+error_mutex:
 	mutex_unlock(&epfile->mutex);
 error:
-	if (buffer_len > epfile->buf_len)
+	if (data != epfile->buffer)
 		kfree(data);
 	if (ret < 0 && ret != -ERESTARTSYS)
 		pr_err_ratelimited("%s(): Error: returning %zd value\n",
@@ -1012,17 +1161,142 @@ static ssize_t
 ffs_epfile_write(struct file *file, const char __user *buf, size_t len,
 		 loff_t *ptr)
 {
+	struct ffs_io_data io_data = {
+		.read = false,
+		.buf = (char __user *)buf,
+		.len = len,
+	};
+
 	ENTER();
 
-	return ffs_epfile_io(file, (char __user *)buf, len, 0);
+	return ffs_epfile_io(file, &io_data);
 }
 
 static ssize_t
 ffs_epfile_read(struct file *file, char __user *buf, size_t len, loff_t *ptr)
 {
+	struct ffs_io_data io_data = {
+		.read = true,
+		.buf = buf,
+		.len = len,
+	};
+
 	ENTER();
 
-	return ffs_epfile_io(file, buf, len, 1);
+	return ffs_epfile_io(file, &io_data);
+}
+
+/*
+ * 3.10 kiocb_cancel() takes an extra reference on the kiocb that the cancel
+ * callback has to drop, as gadgetfs' ep_aio_cancel() does.
+ */
+static int ffs_aio_cancel(struct kiocb *kiocb, struct io_event *event)
+{
+	struct ffs_epfile *epfile = kiocb->ki_filp->private_data;
+	struct ffs_io_data *io_data;
+	int value = -EINVAL;
+
+	ENTER();
+
+	spin_lock_irq(&epfile->ffs->eps_lock);
+	io_data = kiocb->private;
+	if (likely(io_data && io_data->ep && io_data->req))
+		value = usb_ep_dequeue(io_data->ep, io_data->req);
+	spin_unlock_irq(&epfile->ffs->eps_lock);
+
+	aio_put_req(kiocb);
+	return value;
+}
+
+static ssize_t ffs_epfile_aio_io(struct kiocb *kiocb, const struct iovec *iovec,
+				 unsigned long nr_segs, bool read)
+{
+	struct ffs_epfile *epfile = kiocb->ki_filp->private_data;
+	struct ffs_io_data *io_data;
+	ssize_t ret;
+
+	ENTER();
+
+	/*
+	 * readv()/writev() come here with a sync kiocb, which has no aio
+	 * context to queue on: do them segment by segment, as before.
+	 */
+	if (is_sync_kiocb(kiocb)) {
+		ssize_t total = 0;
+		unsigned long i;
+
+		for (i = 0; i < nr_segs; i++) {
+			struct ffs_io_data sync_io = {
+				.read = read,
+				.buf = iovec[i].iov_base,
+				.len = iovec[i].iov_len,
+			};
+
+			ret = ffs_epfile_io(kiocb->ki_filp, &sync_io);
+			if (ret < 0)
+				return total ? total : ret;
+			total += ret;
+			if (ret != iovec[i].iov_len)
+				break;
+		}
+		return total;
+	}
+
+	io_data = kzalloc(sizeof(*io_data), GFP_KERNEL);
+	if (unlikely(!io_data))
+		return -ENOMEM;
+
+	/* the completion copies into the iovec after aio_run_iocb() returns */
+	if (read) {
+		io_data->iovec = kmemdup(iovec, nr_segs * sizeof(*iovec),
+					 GFP_KERNEL);
+		if (unlikely(!io_data->iovec)) {
+			kfree(io_data);
+			return -ENOMEM;
+		}
+	} else {
+		io_data->iovec = iovec;
+	}
+
+	io_data->aio = true;
+	io_data->read = read;
+	io_data->kiocb = kiocb;
+	io_data->nr_segs = nr_segs;
+	io_data->len = iov_length(iovec, nr_segs);
+	io_data->epfile = epfile;
+	io_data->mm = current->mm;
+	atomic_inc(&io_data->mm->mm_count);
+
+	kiocb->private = io_data;
+	kiocb_set_cancel_fn(kiocb, ffs_aio_cancel);
+
+	ret = ffs_epfile_io(kiocb->ki_filp, io_data);
+	if (ret == -EIOCBQUEUED)
+		return ret;
+
+	spin_lock_irq(&epfile->ffs->eps_lock);
+	kiocb->private = NULL;
+	spin_unlock_irq(&epfile->ffs->eps_lock);
+
+	mmdrop(io_data->mm);
+	if (read)
+		kfree(io_data->iovec);
+	kfree(io_data);
+	return ret;
+}
+
+static ssize_t ffs_epfile_aio_write(struct kiocb *kiocb,
+				    const struct iovec *iovec,
+				    unsigned long nr_segs, loff_t loff)
+{
+	return ffs_epfile_aio_io(kiocb, iovec, nr_segs, false);
+}
+
+static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
+				   const struct iovec *iovec,
+				   unsigned long nr_segs, loff_t loff)
+{
+	return ffs_epfile_aio_io(kiocb, iovec, nr_segs, true);
 }
 
 static int
@@ -1148,6 +1422,8 @@ static const struct file_operations ffs_epfile_operations = {
 	.open =		ffs_epfile_open,
 	.write =	ffs_epfile_write,
 	.read =		ffs_epfile_read,
+	.aio_write =	ffs_epfile_aio_write,
+	.aio_read =	ffs_epfile_aio_read,
 	.release =	ffs_epfile_release,
 	.unlocked_ioctl =	ffs_epfile_ioctl,
 };
