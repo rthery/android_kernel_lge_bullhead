@@ -12,6 +12,7 @@
 /* Bypass purgatory for debugging. */
 static const int bypass_purgatory = 1;
 
+#include <linux/io.h>
 #include <linux/kexec.h>
 #include <linux/libfdt_env.h>
 #include <linux/of_fdt.h>
