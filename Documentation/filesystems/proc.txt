@@ -165,6 +165,8 @@ read the file /proc/PID/status:
   VmLck:         0 kB
   VmHWM:       476 kB
   VmRSS:       476 kB
+  RssAnon:             352 kB
+  RssFile:             124 kB
   VmData:      156 kB
   VmStk:        88 kB
   VmExe:        68 kB
@@ -221,7 +223,10 @@ Table 1-2: Contents of the status files (as of 2.6.30-rc7)
  VmSize                      total program size
  VmLck                       locked memory size
  VmHWM                       peak resident set size ("high water mark")
- VmRSS                       size of memory portions
+ VmRSS                       size of memory portions. It contains the two
+                             following parts (VmRSS = RssAnon + RssFile)
+ RssAnon                     size of resident anonymous memory
+ RssFile                     size of resident file mappings, including shmem
  VmData                      size of data, stack, and text segments
  VmStk                       size of data, stack, and text segments
  VmExe                       size of text segment
