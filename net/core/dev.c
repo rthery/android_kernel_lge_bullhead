@@ -1667,7 +1667,7 @@ static inline bool is_skb_forwardable(struct net_device *dev,
  * we have to clear all information in the skb that could
  * impact namespace isolation.
  */
-int dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
+int ____dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
 {
 	if (skb_shinfo(skb)->tx_flags & SKBTX_DEV_ZEROCOPY) {
 		if (skb_copy_ubufs(skb, GFP_ATOMIC)) {
@@ -1689,11 +1689,22 @@ int dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	skb->tstamp.tv64 = 0;
 	skb->pkt_type = PACKET_HOST;
-	skb->protocol = eth_type_trans(skb, dev);
 	skb->mark = 0;
 	secpath_reset(skb);
 	nf_reset(skb);
 	nf_reset_trace(skb);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(____dev_forward_skb);
+
+int dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
+{
+	int ret = ____dev_forward_skb(dev, skb);
+
+	if (unlikely(ret))
+		return ret;
+
+	skb->protocol = eth_type_trans(skb, dev);
 	return netif_rx(skb);
 }
 EXPORT_SYMBOL_GPL(dev_forward_skb);
