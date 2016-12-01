@@ -3166,6 +3166,27 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
 			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
 				      offsetof(struct sock, sk_bound_dev_if));
 		break;
+
+	case offsetof(struct bpf_sock, family):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock, sk_family) != 2);
+
+		*insn++ = BPF_LDX_MEM(BPF_H, dst_reg, src_reg,
+				      offsetof(struct sock, sk_family));
+		break;
+
+	case offsetof(struct bpf_sock, type):
+		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+				      offsetof(struct sock, __sk_flags_offset));
+		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, SK_FL_TYPE_MASK);
+		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, SK_FL_TYPE_SHIFT);
+		break;
+
+	case offsetof(struct bpf_sock, protocol):
+		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+				      offsetof(struct sock, __sk_flags_offset));
+		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, SK_FL_PROTO_MASK);
+		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, SK_FL_PROTO_SHIFT);
+		break;
 	}
 
 	return insn - insn_buf;
@@ -3221,11 +3242,6 @@ static u32 xdp_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 
 #define bpf_ctx_range_till(TYPE, MEMBER1, MEMBER2)				\
 	offsetof(TYPE, MEMBER1) ... offsetofend(TYPE, MEMBER2) - 1
-
-#define SK_FL_PROTO_SHIFT  8
-#define SK_FL_PROTO_MASK   0x0000ff00
-#define SK_FL_TYPE_SHIFT   16
-#define SK_FL_TYPE_MASK    0xffff0000
 
 static u32 sock_addr_convert_ctx_access(enum bpf_access_type type,
 				  int dst_reg, int src_reg,
