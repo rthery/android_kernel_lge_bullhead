@@ -82,6 +82,7 @@ enum aarch64_insn_register_type {
 	AARCH64_INSN_REGTYPE_RM,
 	AARCH64_INSN_REGTYPE_RD,
 	AARCH64_INSN_REGTYPE_RA,
+	AARCH64_INSN_REGTYPE_RS,
 };
 
 enum aarch64_insn_register {
@@ -167,6 +168,8 @@ enum aarch64_insn_ldst_type {
 	AARCH64_INSN_LDST_STORE_PAIR_PRE_INDEX,
 	AARCH64_INSN_LDST_LOAD_PAIR_POST_INDEX,
 	AARCH64_INSN_LDST_STORE_PAIR_POST_INDEX,
+	AARCH64_INSN_LDST_LOAD_EX,
+	AARCH64_INSN_LDST_STORE_EX,
 };
 
 enum aarch64_insn_adsb_type {
@@ -219,18 +222,38 @@ enum aarch64_insn_logic_type {
 	AARCH64_INSN_LOGIC_BIC_SETFLAGS
 };
 
+enum aarch64_insn_prfm_type {
+	AARCH64_INSN_PRFM_TYPE_PLD,
+	AARCH64_INSN_PRFM_TYPE_PLI,
+	AARCH64_INSN_PRFM_TYPE_PST,
+};
+
+enum aarch64_insn_prfm_target {
+	AARCH64_INSN_PRFM_TARGET_L1,
+	AARCH64_INSN_PRFM_TARGET_L2,
+	AARCH64_INSN_PRFM_TARGET_L3,
+};
+
+enum aarch64_insn_prfm_policy {
+	AARCH64_INSN_PRFM_POLICY_KEEP,
+	AARCH64_INSN_PRFM_POLICY_STRM,
+};
+
 #define	__AARCH64_INSN_FUNCS(abbr, mask, val)	\
 static __always_inline bool aarch64_insn_is_##abbr(u32 code) \
 { return (code & (mask)) == (val); } \
 static __always_inline u32 aarch64_insn_get_##abbr##_value(void) \
 { return (val); }
 
+__AARCH64_INSN_FUNCS(prfm,	0x3FC00000, 0x39800000)
 __AARCH64_INSN_FUNCS(str_reg,	0x3FE0EC00, 0x38206800)
 __AARCH64_INSN_FUNCS(ldr_reg,	0x3FE0EC00, 0x38606800)
 __AARCH64_INSN_FUNCS(stp_post,	0x7FC00000, 0x28800000)
 __AARCH64_INSN_FUNCS(ldp_post,	0x7FC00000, 0x28C00000)
 __AARCH64_INSN_FUNCS(stp_pre,	0x7FC00000, 0x29800000)
 __AARCH64_INSN_FUNCS(ldp_pre,	0x7FC00000, 0x29C00000)
+__AARCH64_INSN_FUNCS(load_ex,	0x3F400000, 0x08400000)
+__AARCH64_INSN_FUNCS(store_ex,	0x3F400000, 0x08000000)
 __AARCH64_INSN_FUNCS(add_imm,	0x7F000000, 0x11000000)
 __AARCH64_INSN_FUNCS(adds_imm,	0x7F000000, 0x31000000)
 __AARCH64_INSN_FUNCS(sub_imm,	0x7F000000, 0x51000000)
@@ -310,6 +333,11 @@ u32 aarch64_insn_gen_load_store_pair(enum aarch64_insn_register reg1,
 				     int offset,
 				     enum aarch64_insn_variant variant,
 				     enum aarch64_insn_ldst_type type);
+u32 aarch64_insn_gen_load_store_ex(enum aarch64_insn_register reg,
+				   enum aarch64_insn_register base,
+				   enum aarch64_insn_register state,
+				   enum aarch64_insn_size_type size,
+				   enum aarch64_insn_ldst_type type);
 u32 aarch64_insn_gen_add_sub_imm(enum aarch64_insn_register dst,
 				 enum aarch64_insn_register src,
 				 int imm, enum aarch64_insn_variant variant,
@@ -350,6 +378,10 @@ u32 aarch64_insn_gen_logical_shifted_reg(enum aarch64_insn_register dst,
 					 int shift,
 					 enum aarch64_insn_variant variant,
 					 enum aarch64_insn_logic_type type);
+u32 aarch64_insn_gen_prefetch(enum aarch64_insn_register base,
+			      enum aarch64_insn_prfm_type type,
+			      enum aarch64_insn_prfm_target target,
+			      enum aarch64_insn_prfm_policy policy);
 
 bool aarch64_insn_hotpatch_safe(u32 old_insn, u32 new_insn);
 
