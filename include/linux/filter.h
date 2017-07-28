@@ -575,6 +575,11 @@ static inline unsigned int bpf_prog_size(unsigned int proglen)
 		   offsetof(struct bpf_prog, insns[proglen]));
 }
 
+static inline u32 bpf_prog_insn_size(const struct bpf_prog *prog)
+{
+	return prog->len * sizeof(struct bpf_insn);
+}
+
 static inline bool bpf_prog_was_classic(const struct bpf_prog *prog)
 {
 	/* When classic BPF programs have been loaded and the arch
