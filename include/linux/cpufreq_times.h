@@ -17,6 +17,8 @@
 #define _LINUX_CPUFREQ_TIMES_H
 
 #include <linux/cpufreq.h>
+#include <asm/cputime.h>
+#include <linux/pid.h>
 #include <linux/seq_file.h>
 
 #ifdef CONFIG_CPU_FREQ_TIMES
