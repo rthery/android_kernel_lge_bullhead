@@ -114,8 +114,10 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
 	BPF_CGROUP_INET4_BIND = BPF_CGROUP_INET_SOCK_CREATE + 6,
-	BPF_CGROUP_INET6_BIND = BPF_CGROUP_INET_SOCK_CREATE + 7,
-	__MAX_BPF_ATTACH_TYPE
+	BPF_CGROUP_INET6_BIND,
+	BPF_CGROUP_INET4_CONNECT,
+	BPF_CGROUP_INET6_CONNECT,
+	__MAX_BPF_ATTACH_TYPE,
 };
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
@@ -600,7 +602,18 @@ enum bpf_func_id {
 	 *     @flags: reserved for future use
 	 *     Return: 0 on success or negative error code
 	 */
-	BPF_FUNC_skb_adjust_room,
+	BPF_FUNC_skb_adjust_room = 50,
+
+	/**
+	 * int bpf_bind(ctx, addr, addr_len)
+	 *     Bind socket to address. Only binding to IP is supported, no port can be
+	 *     set in addr.
+	 *     @ctx: pointer to context of type bpf_sock_addr
+	 *     @addr: pointer to struct sockaddr to bind socket to
+	 *     @addr_len: length of sockaddr structure
+	 *     Return: 0 on success or negative error code
+	 */
+	BPF_FUNC_bind = 64,
 
 	/**
 	 * int skb_load_bytes_relative(const struct sk_buff *skb, u32 offset, void *to, u32 len, u32 start_header)
