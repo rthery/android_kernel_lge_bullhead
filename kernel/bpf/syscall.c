@@ -944,19 +944,29 @@ static int
 bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 				enum bpf_attach_type expected_attach_type)
 {
-	/* There are currently no prog types that require specifying
-	 * attach_type at load time.
-	 */
-	return 0;
+	switch (prog_type) {
+	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+		switch (expected_attach_type) {
+		case BPF_CGROUP_INET4_BIND:
+		case BPF_CGROUP_INET6_BIND:
+			return 0;
+		default:
+			return -EINVAL;
+		}
+	default:
+		return 0;
+	}
 }
 
 static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
 					     enum bpf_attach_type attach_type)
 {
-	/* There are currently no prog types that require specifying
-	 * attach_type at load time.
-	 */
-	return 0;
+	switch (prog->type) {
+	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
+	default:
+		return 0;
+	}
 }
 
 /* last field in 'union bpf_attr' used by this command */
@@ -1143,6 +1153,30 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 	case BPF_CGROUP_INET_SOCK_CREATE:
 		prog = bpf_prog_get_type(attr->attach_bpf_fd,
 					 BPF_PROG_TYPE_CGROUP_SOCK);
+		if (IS_ERR(prog))
+			return PTR_ERR(prog);
+
+		if (bpf_prog_attach_check_attach_type(prog, attr->attach_type)) {
+			bpf_prog_put(prog);
+			return -EINVAL;
+		}
+
+		cgrp = cgroup_get_from_fd(attr->target_fd);
+		if (IS_ERR(cgrp)) {
+			bpf_prog_put(prog);
+			return PTR_ERR(cgrp);
+		}
+
+		ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type,
+					attr->attach_flags);
+		if (ret)
+			bpf_prog_put(prog);
+		cgroup_put(cgrp);
+		break;
+	case BPF_CGROUP_INET4_BIND:
+	case BPF_CGROUP_INET6_BIND:
+		prog = bpf_prog_get_type(attr->attach_bpf_fd,
+					 BPF_PROG_TYPE_CGROUP_SOCK_ADDR);
 		if (IS_ERR(prog))
 			return PTR_ERR(prog);
 
