@@ -1592,6 +1592,12 @@ static int bpf_map_get_info_by_fd(struct bpf_map *map,
 	if (map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
 		info.map_flags |= BPF_F_RDONLY_PROG;
 
+	if (map->btf) {
+		info.btf_id = btf_id(map->btf);
+		info.btf_key_type_id = map->btf_key_type_id;
+		info.btf_value_type_id = map->btf_value_type_id;
+	}
+
 	if (copy_to_user(uinfo, &info, info_len) ||
 	    put_user(info_len, &uattr->info.info_len))
 		return -EFAULT;
@@ -1641,6 +1647,19 @@ static int bpf_btf_load(const union bpf_attr *attr)
 		return -EPERM;
 
 	return btf_new_fd(attr);
+}
+
+#define BPF_BTF_GET_FD_BY_ID_LAST_FIELD btf_id
+
+static int bpf_btf_get_fd_by_id(const union bpf_attr *attr)
+{
+	if (CHECK_ATTR(BPF_BTF_GET_FD_BY_ID))
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	return btf_get_fd_by_id(attr->btf_id);
 }
 
 SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
@@ -1732,6 +1751,9 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 	case BPF_BTF_LOAD:
 		err = bpf_btf_load(&attr);
+		break;
+	case BPF_BTF_GET_FD_BY_ID:
+		err = bpf_btf_get_fd_by_id(&attr);
 		break;
 
 	default:
