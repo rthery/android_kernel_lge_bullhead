@@ -2892,6 +2892,16 @@ static bool sock_filter_is_valid_access(int off, int size,
 	return true;
 }
 
+bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type)
+{
+	if (off < 0 || off >= sizeof(struct bpf_sock))
+		return false;
+	if (off % size != 0)
+		return false;
+
+	return type == BPF_READ && size == sizeof(__u32);
+}
+
 static int tc_cls_act_prologue(struct bpf_insn *insn_buf, bool direct_write,
 			       const struct bpf_prog *prog)
 {
@@ -3281,6 +3291,14 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
 	}
 
 	return insn - insn_buf;
+}
+
+u32 bpf_sock_convert_ctx_access(enum bpf_access_type type, int dst_reg,
+				int src_reg, int ctx_off,
+				struct bpf_insn *insn_buf)
+{
+	return sock_filter_convert_ctx_access(type, dst_reg, src_reg, ctx_off,
+					      insn_buf, NULL);
 }
 
 static u32 tc_cls_act_convert_ctx_access(enum bpf_access_type type, int dst_reg,

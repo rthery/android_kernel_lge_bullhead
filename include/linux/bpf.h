@@ -92,6 +92,7 @@ enum bpf_return_type {
 	RET_INTEGER,			/* function returns integer */
 	RET_VOID,			/* function doesn't return anything */
 	RET_PTR_TO_MAP_VALUE_OR_NULL,	/* returns a pointer to map elem value or NULL */
+	RET_PTR_TO_SOCKET_OR_NULL,	/* returns a pointer to a socket or NULL */
 };
 
 /* eBPF function prototype used by verifier to allow BPF_CALLs from eBPF programs
@@ -151,9 +152,18 @@ enum bpf_reg_type {
 	 * map element.
 	 */
 	PTR_TO_MAP_VALUE_ADJ,
+
+	PTR_TO_SOCKET,		 /* reg points to struct bpf_sock */
+	PTR_TO_SOCKET_OR_NULL,	 /* reg points to struct bpf_sock or NULL */
 };
 
 struct bpf_prog;
+struct bpf_insn;
+
+bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type);
+u32 bpf_sock_convert_ctx_access(enum bpf_access_type type, int dst_reg,
+				int src_reg, int ctx_off,
+				struct bpf_insn *insn_buf);
 
 struct bpf_verifier_ops {
 	/* return eBPF function prototype for verification */
