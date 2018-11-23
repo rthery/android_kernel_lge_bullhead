@@ -23,6 +23,7 @@
 #include <linux/printk.h>
 #include <linux/skbuff.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include <asm/byteorder.h>
 #include <asm/cacheflush.h>
@@ -929,4 +930,17 @@ void bpf_jit_free(struct bpf_prog *prog)
 
 free_filter:
 	bpf_prog_unlock_free(prog);
+}
+
+void *bpf_jit_alloc_exec(unsigned long size)
+{
+	return __vmalloc_node_range(size, PAGE_SIZE, MODULES_VADDR,
+				    MODULES_END, GFP_KERNEL,
+				    PAGE_KERNEL_EXEC, NUMA_NO_NODE,
+				    __builtin_return_address(0));
+}
+
+void bpf_jit_free_exec(void *addr)
+{
+	return vfree(addr);
 }
