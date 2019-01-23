@@ -25,6 +25,11 @@
 struct sk_buff;
 struct sock;
 struct seccomp_data;
+#define bpf_ctx_range(TYPE, MEMBER)						\
+	offsetof(TYPE, MEMBER) ... offsetofend(TYPE, MEMBER) - 1
+#define bpf_ctx_range_till(TYPE, MEMBER1, MEMBER2)				\
+	offsetof(TYPE, MEMBER1) ... offsetofend(TYPE, MEMBER2) - 1
+
 struct bpf_prog_aux;
 
 /* ArgX, context and stack frame pointer register positions. Note,
