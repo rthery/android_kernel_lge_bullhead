@@ -2671,10 +2671,24 @@ sock_filter_func_proto(enum bpf_func_id func_id)
         }
 }
 
+BPF_CALL_1(bpf_sk_fullsock, struct sock *, sk)
+{
+	return sk_fullsock(sk) ? (unsigned long)sk : (unsigned long)NULL;
+}
+
+static const struct bpf_func_proto bpf_sk_fullsock_proto = {
+	.func		= bpf_sk_fullsock,
+	.gpl_only	= false,
+	.ret_type	= RET_PTR_TO_SOCKET_OR_NULL,
+	.arg1_type	= ARG_PTR_TO_SOCK_COMMON,
+};
+
 static const struct bpf_func_proto *
 tc_cls_act_func_proto(enum bpf_func_id func_id)
 {
 	switch (func_id) {
+	case BPF_FUNC_sk_fullsock:
+		return &bpf_sk_fullsock_proto;
 	case BPF_FUNC_skb_store_bytes:
 		return &bpf_skb_store_bytes_proto;
 	case BPF_FUNC_skb_load_bytes:
@@ -2817,6 +2831,8 @@ cg_skb_func_proto(enum bpf_func_id func_id)
 	switch (func_id) {
 	case BPF_FUNC_skb_load_bytes:
 		return &bpf_skb_load_bytes_proto;
+	case BPF_FUNC_sk_fullsock:
+		return &bpf_sk_fullsock_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -2829,6 +2845,7 @@ static bool __is_valid_access(int off, int size, enum bpf_access_type type)
 	/* Upstream fields kept for the layout only; not backported. */
 	switch (off) {
 	case bpf_ctx_range_till(struct __sk_buff, napi_id, wire_len):
+	case bpf_ctx_range(struct __sk_buff, sk):
 		return false;
 	}
 	/* The verifier guarantees that size > 0. */
@@ -2837,6 +2854,15 @@ static bool __is_valid_access(int off, int size, enum bpf_access_type type)
 	if (size != sizeof(__u32))
 		return false;
 
+	return true;
+}
+
+static bool __is_valid_sk_access(int off, int size, enum bpf_access_type type,
+				 enum bpf_reg_type *reg_type)
+{
+	if (type == BPF_WRITE || size != sizeof(__u64))
+		return false;
+	*reg_type = PTR_TO_SOCK_COMMON_OR_NULL;
 	return true;
 }
 
@@ -2850,6 +2876,8 @@ static bool sk_filter_is_valid_access(int off, int size,
 	case offsetof(struct __sk_buff, data):
 	case offsetof(struct __sk_buff, data_end):
 		return false;
+	case offsetof(struct __sk_buff, sk):
+		return __is_valid_sk_access(off, size, type, reg_type);
 	}
 
 	if (type == BPF_WRITE) {
@@ -2900,6 +2928,17 @@ bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type)
 		return false;
 
 	return type == BPF_READ && size == sizeof(__u32);
+}
+
+bool bpf_sock_common_is_valid_access(int off, int size,
+				     enum bpf_access_type type)
+{
+	switch (off) {
+	case bpf_ctx_range_till(struct bpf_sock, type, protocol):
+		return false;
+	default:
+		return bpf_sock_is_valid_access(off, size, type);
+	}
 }
 
 static int tc_cls_act_prologue(struct bpf_insn *insn_buf, bool direct_write,
@@ -2967,6 +3006,8 @@ static bool tc_cls_act_is_valid_access(int off, int size,
 	case offsetof(struct __sk_buff, data_end):
 		*reg_type = PTR_TO_PACKET_END;
 		break;
+	case offsetof(struct __sk_buff, sk):
+		return __is_valid_sk_access(off, size, type, reg_type);
 	}
 
 	return __is_valid_access(off, size, type);
@@ -3242,6 +3283,12 @@ static u32 sk_filter_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct skb_shared_info, gso_segs),
 				      dst_reg, dst_reg,
 				      offsetof(struct skb_shared_info, gso_segs));
+		break;
+
+	case offsetof(struct __sk_buff, sk):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, sk),
+				      dst_reg, src_reg,
+				      offsetof(struct sk_buff, sk));
 		break;
 	}
 

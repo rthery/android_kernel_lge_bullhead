@@ -190,6 +190,8 @@ static const char * const reg_type_str[] = {
 	[PTR_TO_PACKET_END]	= "pkt_end",
 	[PTR_TO_SOCKET]		= "sock",
 	[PTR_TO_SOCKET_OR_NULL] = "sock_or_null",
+	[PTR_TO_SOCK_COMMON]	= "sock_common",
+	[PTR_TO_SOCK_COMMON_OR_NULL] = "sock_common_or_null",
 };
 
 static void print_verifier_state(struct bpf_verifier_state *state)
@@ -543,6 +545,8 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	case CONST_PTR_TO_MAP:
 	case PTR_TO_SOCKET:
 	case PTR_TO_SOCKET_OR_NULL:
+	case PTR_TO_SOCK_COMMON:
+	case PTR_TO_SOCK_COMMON_OR_NULL:
 		return true;
 	default:
 		return false;
@@ -771,6 +775,9 @@ static int check_sock_access(struct bpf_verifier_env *env, u32 regno, int off,
 	bool valid;
 
 	switch (reg->type) {
+	case PTR_TO_SOCK_COMMON:
+		valid = bpf_sock_common_is_valid_access(off, size, t);
+		break;
 	case PTR_TO_SOCKET:
 		valid = bpf_sock_is_valid_access(off, size, t);
 		break;
@@ -789,13 +796,15 @@ static int check_sock_access(struct bpf_verifier_env *env, u32 regno, int off,
 
 static bool type_is_sk_pointer(enum bpf_reg_type type)
 {
-	return type == PTR_TO_SOCKET;
+	return type == PTR_TO_SOCKET ||
+	       type == PTR_TO_SOCK_COMMON;
 }
 
 static bool reg_type_may_be_null(enum bpf_reg_type type)
 {
 	return type == PTR_TO_MAP_VALUE_OR_NULL ||
-	       type == PTR_TO_SOCKET_OR_NULL;
+	       type == PTR_TO_SOCKET_OR_NULL ||
+	       type == PTR_TO_SOCK_COMMON_OR_NULL;
 }
 
 static bool __is_pointer_value(bool allow_ptr_leaks,
@@ -912,6 +921,8 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 							 value_regno);
 			/* note that reg.[id|off|range] == 0 */
 			state->regs[value_regno].type = reg_type;
+			if (reg_type_may_be_null(reg_type))
+				state->regs[value_regno].id = ++env->id_gen;
 		}
 
 	} else if (reg->type == FRAME_PTR || reg->type == PTR_TO_STACK) {
@@ -1131,6 +1142,11 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 	} else if (arg_type == ARG_PTR_TO_CTX) {
 		expected_type = PTR_TO_CTX;
 		if (type != expected_type)
+			goto err_type;
+	} else if (arg_type == ARG_PTR_TO_SOCK_COMMON) {
+		expected_type = PTR_TO_SOCK_COMMON;
+		/* Any sk pointer can be ARG_PTR_TO_SOCK_COMMON */
+		if (!type_is_sk_pointer(type))
 			goto err_type;
 	} else if (arg_type == ARG_PTR_TO_MEM ||
 		   arg_type == ARG_PTR_TO_UNINIT_MEM) {
@@ -2340,6 +2356,8 @@ static void mark_map_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 			reg->type = UNKNOWN_VALUE;
 		else if (reg->type == PTR_TO_SOCKET_OR_NULL)
 			reg->type = PTR_TO_SOCKET;
+		else if (reg->type == PTR_TO_SOCK_COMMON_OR_NULL)
+			reg->type = PTR_TO_SOCK_COMMON;
 		else
 			reg->type = PTR_TO_MAP_VALUE;
 		/* We don't need id from this point onwards anymore, thus we
@@ -3019,6 +3037,8 @@ static bool reg_type_mismatch_ok(enum bpf_reg_type type)
 	case PTR_TO_CTX:
 	case PTR_TO_SOCKET:
 	case PTR_TO_SOCKET_OR_NULL:
+	case PTR_TO_SOCK_COMMON:
+	case PTR_TO_SOCK_COMMON_OR_NULL:
 		return false;
 	default:
 		return true;
@@ -3598,6 +3618,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 						      insn_buf, env->prog);
 			break;
 		case PTR_TO_SOCKET:
+		case PTR_TO_SOCK_COMMON:
 			cnt = bpf_sock_convert_ctx_access(type, insn->dst_reg,
 							  insn->src_reg,
 							  insn->off, insn_buf);
