@@ -1270,6 +1270,16 @@ int bpf_prog_array_copy(struct bpf_prog_array __rcu *old_array,
 	return 0;
 }
 
+bool bpf_prog_array_is_empty(struct bpf_prog_array *array)
+{
+	struct bpf_prog **prog;
+
+	for (prog = array->progs; *prog; prog++)
+		if (*prog != &dummy_bpf_prog.prog)
+			return false;
+	return true;
+}
+
 int bpf_prog_array_length(struct bpf_prog_array __rcu *progs)
 {
 	struct bpf_prog **prog;

@@ -116,6 +116,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_CGROUP_SKB,
 	BPF_PROG_TYPE_CGROUP_SOCK,
 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = BPF_PROG_TYPE_CGROUP_SOCK + 9,
+	BPF_PROG_TYPE_CGROUP_SOCKOPT = BPF_PROG_TYPE_CGROUP_SOCK_ADDR + 7,
 };
 
 enum bpf_attach_type {
@@ -130,6 +131,8 @@ enum bpf_attach_type {
 	BPF_CGROUP_UDP6_SENDMSG,
 	BPF_CGROUP_UDP4_RECVMSG = 19,
 	BPF_CGROUP_UDP6_RECVMSG,
+	BPF_CGROUP_GETSOCKOPT,
+	BPF_CGROUP_SETSOCKOPT,
 	__MAX_BPF_ATTACH_TYPE,
 };
 
@@ -869,6 +872,17 @@ struct bpf_sock_addr {
 	__u32 msg_src_ip6[4];	/* Allows 1,2,4-byte read an 4-byte write.
 				 * Stored in network byte order.
 				 */
+};
+
+struct bpf_sockopt {
+	__bpf_md_ptr(struct bpf_sock *, sk);
+	__bpf_md_ptr(void *, optval);
+	__bpf_md_ptr(void *, optval_end);
+
+	__s32	level;
+	__s32	optname;
+	__s32	optlen;
+	__s32	retval;
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */
