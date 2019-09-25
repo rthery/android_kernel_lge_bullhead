@@ -89,6 +89,7 @@ extern unsigned long highest_memmap_pfn;
  * in mm/vmscan.c:
  */
 extern int isolate_lru_page(struct page *page);
+extern unsigned long reclaim_pages(struct list_head *page_list);
 extern void putback_lru_page(struct page *page);
 extern bool zone_reclaimable(struct zone *zone);
 

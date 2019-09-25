@@ -1173,6 +1173,45 @@ unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 	return ret;
 }
 
+unsigned long reclaim_pages(struct list_head *page_list)
+{
+	struct scan_control sc = {
+		.gfp_mask = GFP_KERNEL,
+		.priority = DEF_PRIORITY,
+		.may_writepage = 1,
+		.may_unmap = 1,
+		.may_swap = 1,
+	};
+	unsigned long nr_reclaimed = 0;
+	unsigned long dummy1, dummy2, dummy3, dummy4, dummy5;
+	LIST_HEAD(zone_page_list);
+	struct page *page, *next;
+	struct zone *zone;
+
+	/* shrink_page_list() works on one zone at a time */
+	while (!list_empty(page_list)) {
+		zone = page_zone(lru_to_page(page_list));
+		list_for_each_entry_safe(page, next, page_list, lru) {
+			if (page_zone(page) != zone)
+				continue;
+			ClearPageActive(page);
+			list_move(&page->lru, &zone_page_list);
+		}
+
+		nr_reclaimed += shrink_page_list(&zone_page_list, zone, &sc,
+				TTU_UNMAP, &dummy1, &dummy2, &dummy3,
+				&dummy4, &dummy5, false);
+
+		while (!list_empty(&zone_page_list)) {
+			page = lru_to_page(&zone_page_list);
+			list_del(&page->lru);
+			putback_lru_page(page);
+		}
+	}
+
+	return nr_reclaimed;
+}
+
 /*
  * Attempt to remove the specified page from its LRU.  Only take this page
  * if it is of the appropriate PageActive status.  Pages which are being
