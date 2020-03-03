@@ -3118,6 +3118,27 @@ static bool sock_addr_is_valid_access(int off, int size,
 	return true;
 }
 
+static struct bpf_insn *bpf_convert_shinfo_access(int dst_reg, int src_reg,
+						  struct bpf_insn *insn)
+{
+	/* dst_reg = skb_shinfo(SKB); */
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+	*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
+			      BPF_REG_AX, src_reg,
+			      offsetof(struct sk_buff, end));
+	*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, head),
+			      dst_reg, src_reg,
+			      offsetof(struct sk_buff, head));
+	*insn++ = BPF_ALU64_REG(BPF_ADD, dst_reg, BPF_REG_AX);
+#else
+	*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
+			      dst_reg, src_reg,
+			      offsetof(struct sk_buff, end));
+#endif
+
+	return insn;
+}
+
 static u32 sk_filter_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 					int src_reg, int ctx_off,
 					struct bpf_insn *insn_buf,
@@ -3266,23 +3287,16 @@ static u32 sk_filter_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 #endif
 
 	case offsetof(struct __sk_buff, gso_segs):
-		/* si->dst_reg = skb_shinfo(SKB); */
-#ifdef NET_SKBUFF_DATA_USES_OFFSET
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
-				      BPF_REG_AX, src_reg,
-				      offsetof(struct sk_buff, end));
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, head),
-				      dst_reg, src_reg,
-				      offsetof(struct sk_buff, head));
-		*insn++ = BPF_ALU64_REG(BPF_ADD, dst_reg, BPF_REG_AX);
-#else
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
-				      dst_reg, src_reg,
-				      offsetof(struct sk_buff, end));
-#endif
+		insn = bpf_convert_shinfo_access(dst_reg, src_reg, insn);
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct skb_shared_info, gso_segs),
 				      dst_reg, dst_reg,
 				      offsetof(struct skb_shared_info, gso_segs));
+		break;
+	case offsetof(struct __sk_buff, gso_size):
+		insn = bpf_convert_shinfo_access(dst_reg, src_reg, insn);
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct skb_shared_info, gso_size),
+				      dst_reg, dst_reg,
+				      offsetof(struct skb_shared_info, gso_size));
 		break;
 
 	case offsetof(struct __sk_buff, sk):
