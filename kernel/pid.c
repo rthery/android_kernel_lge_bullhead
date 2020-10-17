@@ -40,6 +40,7 @@
 #include <linux/proc_fs.h>
 #include <linux/anon_inodes.h>
 #include <linux/cgroup-defs.h>
+#include <linux/file.h>
 
 #define pid_hashfn(nr, ns)	\
 	hash_long((unsigned long)nr + (unsigned long)ns, pidhash_shift)
@@ -635,6 +636,26 @@ SYSCALL_DEFINE2(pidfd_open, pid_t, pid, unsigned int, flags)
 	fd = ret ?: pidfd_create(p);
 	put_pid(p);
 	return fd;
+}
+
+struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
+{
+	struct fd f;
+	struct pid *pid;
+
+	f = fdget(fd);
+	if (!f.file)
+		return ERR_PTR(-EBADF);
+
+	if (f.file->f_op == &pidfd_fops) {
+		pid = get_pid(f.file->private_data);
+		*flags = f.file->f_flags;
+	} else {
+		pid = ERR_PTR(-EBADF);
+	}
+
+	fdput(f);
+	return pid;
 }
 
 /*

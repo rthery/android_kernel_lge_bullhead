@@ -19,6 +19,9 @@
 #include <linux/blkdev.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/uio.h>
+#include <linux/ptrace.h>
+#include <linux/slab.h>
 
 #include "internal.h"
 
@@ -557,7 +560,8 @@ madvise_behavior_valid(int behavior)
  *  -EBADF  - map exists, but area maps something that isn't a file.
  *  -EAGAIN - a kernel resource was temporarily unavailable.
  */
-SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
+static int do_madvise(struct mm_struct *mm, unsigned long start,
+		size_t len_in, int behavior)
 {
 	unsigned long end, tmp;
 	struct vm_area_struct * vma, *prev;
@@ -567,10 +571,6 @@ SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 	size_t len;
 	struct blk_plug plug;
 
-#ifdef CONFIG_MEMORY_FAILURE
-	if (behavior == MADV_HWPOISON || behavior == MADV_SOFT_OFFLINE)
-		return madvise_hwpoison(behavior, start, start+len_in);
-#endif
 	if (!madvise_behavior_valid(behavior))
 		return error;
 
@@ -592,16 +592,16 @@ SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 
 	write = madvise_need_mmap_write(behavior);
 	if (write)
-		down_write(&current->mm->mmap_sem);
+		down_write(&mm->mmap_sem);
 	else
-		down_read(&current->mm->mmap_sem);
+		down_read(&mm->mmap_sem);
 
 	/*
 	 * If the interval [start,end) covers some unmapped address
 	 * ranges, just ignore them, but return -ENOMEM at the end.
 	 * - different from the way of handling in mlock etc.
 	 */
-	vma = find_vma_prev(current->mm, start, &prev);
+	vma = find_vma_prev(mm, start, &prev);
 	if (vma && start > vma->vm_start)
 		prev = vma;
 
@@ -638,14 +638,113 @@ SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 		if (prev)
 			vma = prev->vm_next;
 		else	/* madvise_remove dropped mmap_sem */
-			vma = find_vma(current->mm, start);
+			vma = find_vma(mm, start);
 	}
 out:
 	blk_finish_plug(&plug);
 	if (write)
-		up_write(&current->mm->mmap_sem);
+		up_write(&mm->mmap_sem);
 	else
-		up_read(&current->mm->mmap_sem);
+		up_read(&mm->mmap_sem);
 
 	return error;
+}
+
+SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
+{
+#ifdef CONFIG_MEMORY_FAILURE
+	if (behavior == MADV_HWPOISON || behavior == MADV_SOFT_OFFLINE)
+		return madvise_hwpoison(behavior, start, start+len_in);
+#endif
+	return do_madvise(current->mm, start, len_in, behavior);
+}
+
+static bool process_madvise_behavior_valid(int behavior)
+{
+	switch (behavior) {
+	case MADV_PAGEOUT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+SYSCALL_DEFINE5(process_madvise, int, pidfd, const struct iovec __user *, vec,
+		size_t, vlen, int, behavior, unsigned int, flags)
+{
+	ssize_t ret;
+	struct iovec iovstack[UIO_FASTIOV];
+	struct iovec *iov = iovstack;
+	struct pid *pid;
+	struct task_struct *task;
+	struct mm_struct *mm;
+	size_t total_len, done = 0;
+	unsigned int f_flags;
+	unsigned long i;
+
+	if (flags != 0) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = rw_copy_check_uvector(CHECK_IOVEC_ONLY, vec, vlen,
+				    ARRAY_SIZE(iovstack), iovstack, &iov);
+	if (ret < 0)
+		goto free_iov;
+	total_len = ret;
+
+	pid = pidfd_get_pid(pidfd, &f_flags);
+	if (IS_ERR(pid)) {
+		ret = PTR_ERR(pid);
+		goto free_iov;
+	}
+
+	task = get_pid_task(pid, PIDTYPE_PID);
+	if (!task) {
+		ret = -ESRCH;
+		goto put_pid;
+	}
+
+	if (!process_madvise_behavior_valid(behavior)) {
+		ret = -EINVAL;
+		goto release_task;
+	}
+
+	/* Require PTRACE_MODE_READ to avoid leaking ASLR metadata. */
+	mm = mm_access(task, PTRACE_MODE_READ_FSCREDS);
+	if (IS_ERR_OR_NULL(mm)) {
+		ret = IS_ERR(mm) ? PTR_ERR(mm) : -ESRCH;
+		goto release_task;
+	}
+
+	/* Require CAP_SYS_NICE for influencing process performance. */
+	if (!capable(CAP_SYS_NICE)) {
+		ret = -EPERM;
+		goto release_mm;
+	}
+
+	for (i = 0; i < vlen; i++) {
+		ret = do_madvise(mm, (unsigned long)iov[i].iov_base,
+				 iov[i].iov_len, behavior);
+		if (ret < 0)
+			break;
+		done += iov[i].iov_len;
+	}
+
+	if (ret == 0)
+		ret = total_len;
+	else if (done)
+		ret = done;
+
+release_mm:
+	mmput(mm);
+release_task:
+	put_task_struct(task);
+put_pid:
+	put_pid(pid);
+free_iov:
+	if (iov != iovstack)
+		kfree(iov);
+out:
+	return ret;
 }
