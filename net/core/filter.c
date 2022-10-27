@@ -1684,6 +1684,10 @@ static int __bpf_redirect_no_mac(struct sk_buff *skb, struct net_device *dev,
 	/* skb->mac_len is not set on normal egress */
 	unsigned int mlen = skb->network_header - skb->mac_header;
 
+	if (unlikely(skb->len <= mlen)) {
+		kfree_skb(skb);
+		return -ERANGE;
+	}
 	__skb_pull(skb, mlen);
 
 	/* At ingress, the mac header has already been pulled once.
