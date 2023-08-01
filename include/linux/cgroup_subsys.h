@@ -79,8 +79,4 @@ SUBSYS(hugetlb)
 
 /* */
 
-#ifdef CONFIG_CGROUP_BCACHE
-SUBSYS(bcache)
-#endif
-
 /* */
