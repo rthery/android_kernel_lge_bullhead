@@ -1460,6 +1460,10 @@ config ELF_CORE
 	help
 	  Enable support for generating core dumps. Disabling saves about 4k.
 
+config ANDROID_TREBLE_SPOOF_BPF_KERNEL_VERSION_PREFIX
+        string "Kernel version to prepend to real one for bpfloader"
+        depends on ANDROID_TREBLE_SPOOF_KERNEL_VERSION
+        default "4.9.337"
 
 config PCSPKR_PLATFORM
 	bool "Enable PC-Speaker support" if EXPERT
