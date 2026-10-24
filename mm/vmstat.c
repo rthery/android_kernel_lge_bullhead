@@ -1287,7 +1287,6 @@ static void __cpuinit start_cpu_timer(int cpu)
 {
 	struct delayed_work *work = &per_cpu(vmstat_work, cpu);
 
-	INIT_DEFERRABLE_WORK(work, vmstat_update);
 	schedule_delayed_work_on(cpu, work, __round_jiffies_relative(HZ, cpu));
 }
 
@@ -1311,7 +1310,6 @@ static int __cpuinit vmstat_cpuup_callback(struct notifier_block *nfb,
 	case CPU_DOWN_PREPARE:
 	case CPU_DOWN_PREPARE_FROZEN:
 		cancel_delayed_work_sync(&per_cpu(vmstat_work, cpu));
-		per_cpu(vmstat_work, cpu).work.func = NULL;
 		break;
 	case CPU_DOWN_FAILED:
 	case CPU_DOWN_FAILED_FROZEN:
@@ -1335,6 +1333,9 @@ static int __init setup_vmstat(void)
 {
 #ifdef CONFIG_SMP
 	int cpu;
+
+	for_each_possible_cpu(cpu)
+		INIT_DEFERRABLE_WORK(&per_cpu(vmstat_work, cpu), vmstat_update);
 
 	cpu_notifier_register_begin();
 	__register_cpu_notifier(&vmstat_notifier);
