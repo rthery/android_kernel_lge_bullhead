@@ -168,7 +168,7 @@ static inline bool queuing_blocked(struct kthread_worker *worker,
 {
 	lockdep_assert_held(&worker->lock);
 
-	return !list_empty(&work->node);
+	return !list_empty(&work->node) || work->canceling;
 }
 #define kthread_init_delayed_work(dwork, fn)				\
 	do {								\
