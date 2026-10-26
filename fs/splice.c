@@ -706,6 +706,113 @@ err:
 }
 EXPORT_SYMBOL(default_file_splice_read);
 
+/**
+ * copy_splice_read -  Copy data from a file and splice the copy into a pipe
+ * @in: The file to read from
+ * @ppos: Pointer to the file position to read from
+ * @pipe: The pipe to splice into
+ * @len: The amount to splice
+ * @flags: The SPLICE_F_* flags
+ *
+ * Read no more than the pipe has room for, under the pipe lock, so that
+ * nothing read from a stream such as a socket is lost if the pipe fills.
+ */
+ssize_t copy_splice_read(struct file *in, loff_t *ppos,
+			 struct pipe_inode_info *pipe, size_t len,
+			 unsigned int flags)
+{
+	struct page **pages;
+	struct iovec *vec;
+	unsigned int npages, i;
+	mm_segment_t old_fs;
+	loff_t pos = *ppos;
+	ssize_t ret = 0, res;
+	int do_wakeup = 0;
+
+	pipe_lock(pipe);
+
+	for (;;) {
+		if (!pipe->readers) {
+			send_sig(SIGPIPE, current, 0);
+			ret = -EPIPE;
+			goto out_unlock;
+		}
+		if (pipe->nrbufs < pipe->buffers)
+			break;
+		if (flags & SPLICE_F_NONBLOCK) {
+			ret = -EAGAIN;
+			goto out_unlock;
+		}
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
+			goto out_unlock;
+		}
+		pipe->waiting_writers++;
+		pipe_wait(pipe);
+		pipe->waiting_writers--;
+	}
+
+	npages = pipe->buffers - pipe->nrbufs;
+	len = min_t(size_t, len, (size_t)npages << PAGE_SHIFT);
+	npages = DIV_ROUND_UP(len, PAGE_SIZE);
+
+	ret = -ENOMEM;
+	pages = kcalloc(npages, sizeof(*pages), GFP_KERNEL);
+	vec = kcalloc(npages, sizeof(*vec), GFP_KERNEL);
+	if (!pages || !vec)
+		goto out_free;
+
+	for (i = 0; i < npages; i++) {
+		pages[i] = alloc_page(GFP_USER);
+		if (!pages[i])
+			goto out_free;
+		vec[i].iov_base = (void __user *)page_address(pages[i]);
+		vec[i].iov_len = min_t(size_t, len - ((size_t)i << PAGE_SHIFT),
+				       PAGE_SIZE);
+	}
+
+	old_fs = get_fs();
+	set_fs(get_ds());
+	/* The cast to a user pointer is valid due to the set_fs() */
+	res = vfs_readv(in, (const struct iovec __user *)vec, npages, &pos);
+	set_fs(old_fs);
+	ret = res;
+	if (res <= 0)
+		goto out_free;
+
+	*ppos = pos;
+	for (i = 0; i < npages && res > 0; i++) {
+		int newbuf = (pipe->curbuf + pipe->nrbufs) & (pipe->buffers - 1);
+		struct pipe_buffer *buf = pipe->bufs + newbuf;
+
+		buf->page = pages[i];
+		buf->offset = 0;
+		buf->len = min_t(size_t, res, PAGE_SIZE);
+		buf->private = 0;
+		buf->ops = &default_pipe_buf_ops;
+		buf->flags = 0;
+		pipe->nrbufs++;
+		pages[i] = NULL;
+		res -= buf->len;
+	}
+	if (pipe->files)
+		do_wakeup = 1;
+
+out_free:
+	if (pages)
+		for (i = 0; i < npages; i++)
+			if (pages[i])
+				__free_page(pages[i]);
+	kfree(pages);
+	kfree(vec);
+out_unlock:
+	pipe_unlock(pipe);
+	if (do_wakeup)
+		wakeup_pipe_readers(pipe);
+	return ret;
+}
+EXPORT_SYMBOL(copy_splice_read);
+
 /*
  * Send 'sd->len' bytes to socket from 'sd->file' at position 'sd->pos'
  * using sendpage(). Return the number of bytes sent.
