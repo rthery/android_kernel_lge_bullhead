@@ -187,6 +187,7 @@ static rx_handler_result_t __rmnet_deliver_skb(struct sk_buff *skb,
 	case RMNET_EPMODE_VND:
 		skb_reset_transport_header(skb);
 		skb_reset_network_header(skb);
+		skb_set_mac_header(skb, 0);
 		switch (rmnet_vnd_rx_fixup(skb, skb->dev)) {
 		case RX_HANDLER_CONSUMED:
 			return RX_HANDLER_CONSUMED;
