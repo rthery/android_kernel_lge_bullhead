@@ -588,10 +588,21 @@ static int kernfs_dop_revalidate(struct dentry *dentry, unsigned int flags)
 		goto out_bad;
 
 	mutex_unlock(&kernfs_mutex);
+out_valid:
 	return 1;
 out_bad:
 	mutex_unlock(&kernfs_mutex);
 out_bad_unlocked:
+	/*
+	 * This VFS still has the d_invalidate() that refuses busy
+	 * directories, so drop the stale dentry here as sysfs did.
+	 */
+	if (dentry->d_inode && S_ISDIR(dentry->d_inode->i_mode)) {
+		if (have_submounts(dentry))
+			goto out_valid;
+		shrink_dcache_parent(dentry);
+	}
+	d_drop(dentry);
 	return 0;
 }
 
