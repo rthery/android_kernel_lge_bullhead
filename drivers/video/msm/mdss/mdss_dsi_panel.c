@@ -745,9 +745,11 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 	}
 
 #if defined(CONFIG_WAKE_GESTURES) || defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
-	if (gestures_enabled) {
+	/* Exit sleep keeps touch scanning; enter sleep otherwise */
+	if (gestures_enabled)
 		ctrl->off_cmds.cmds[1].payload[0] = 0x11;
-	}
+	else
+		ctrl->off_cmds.cmds[1].payload[0] = 0x10;
 #endif
 
 	if (ctrl->off_cmds.cmd_cnt)
