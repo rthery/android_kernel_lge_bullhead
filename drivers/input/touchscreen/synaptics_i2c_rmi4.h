@@ -264,6 +264,14 @@ struct synaptics_rmi4_data {
 	bool stay_awake;
 	bool staying_awake;
 	bool check_build;
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+	bool f12_wakeup_gesture;
+	bool enable_wakeup_gesture;
+	bool wakeup_gesture_active;
+	unsigned short f12_ctrl20_addr;
+	unsigned short f12_ctrl27_addr;
+	unsigned short f12_data4_addr;
+#endif
 	int (*i2c_read)(struct synaptics_rmi4_data *pdata, unsigned short addr,
 			unsigned char *data, unsigned short length);
 	int (*i2c_write)(struct synaptics_rmi4_data *pdata, unsigned short addr,

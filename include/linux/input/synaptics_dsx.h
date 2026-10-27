@@ -21,6 +21,11 @@
 #ifndef _SYNAPTICS_DSX_H_
 #define _SYNAPTICS_DSX_H_
 
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+/* Set before the display blanks; the panel then stays powered for touch */
+extern bool gestures_enabled;
+#endif
+
 /*
  * struct synaptics_rmi4_capacitance_button_map - 0d button map
  * @nbuttons: number of buttons

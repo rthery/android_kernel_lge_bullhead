@@ -232,6 +232,21 @@ bool scr_suspended(void)
 }
 #endif
 
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+#define F12_CONTINUOUS_MODE 0x00
+#define F12_WAKEUP_GESTURE_MODE 0x02
+#define F12_DOUBLE_TAP_ENABLE 0x01
+#define F12_DOUBLE_TAP_DETECTED 0x03
+
+bool gestures_enabled;
+
+static ssize_t synaptics_rmi4_wake_gesture_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_wake_gesture_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+#endif
+
 struct synaptics_rmi4_f01_device_status {
 	union {
 		struct {
@@ -520,6 +535,11 @@ static struct device_attribute attrs[] = {
 	__ATTR(reg_control, (S_IRUGO | S_IWUSR),
 			NULL,
 			synaptics_rmi4_reg_control_store),
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+	__ATTR(wake_gesture, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_wake_gesture_show,
+			synaptics_rmi4_wake_gesture_store),
+#endif
 #if defined(CONFIG_SECURE_TOUCH)
 	__ATTR(secure_touch_enable, (S_IRUGO | S_IWUSR | S_IWGRP),
 			synaptics_secure_touch_enable_show,
@@ -1027,6 +1047,34 @@ static ssize_t synaptics_rmi4_flipy_store(struct device *dev,
 	return count;
 }
 
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+static ssize_t synaptics_rmi4_wake_gesture_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		rmi4_data->enable_wakeup_gesture);
+}
+
+static ssize_t synaptics_rmi4_wake_gesture_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+
+	if (!rmi4_data->f12_wakeup_gesture)
+		return -ENODEV;
+
+	rmi4_data->enable_wakeup_gesture = input > 0;
+
+	return count;
+}
+#endif
+
 static ssize_t synaptics_rmi4_reg_control_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -1475,6 +1523,26 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 	data_addr = fhandler->full_addr.data_base;
 	extra_data = (struct synaptics_rmi4_f12_extra_data *)fhandler->extra;
 	size_of_2d_data = sizeof(struct synaptics_rmi4_f12_finger_data);
+
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+	if (rmi4_data->wakeup_gesture_active) {
+		unsigned char gesture;
+
+		retval = synaptics_rmi4_i2c_read(rmi4_data,
+				rmi4_data->f12_data4_addr,
+				&gesture,
+				sizeof(gesture));
+		if (retval < 0 || gesture != F12_DOUBLE_TAP_DETECTED)
+			return 0;
+
+		pm_wakeup_event(&rmi4_data->i2c_client->dev, 500);
+		input_report_key(rmi4_data->input_dev, KEY_WAKEUP, 1);
+		input_sync(rmi4_data->input_dev);
+		input_report_key(rmi4_data->input_dev, KEY_WAKEUP, 0);
+		input_sync(rmi4_data->input_dev);
+		return 0;
+	}
+#endif
 
 	retval = synaptics_rmi4_i2c_read(rmi4_data,
 			data_addr + extra_data->data1_offset,
@@ -2516,6 +2584,39 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 
 	/* Determine the presence of the Data0 register */
 	extra_data->data1_offset = query_8.data0_is_present;
+
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+	rmi4_data->f12_wakeup_gesture = query_5.ctrl20_is_present &&
+			query_5.ctrl27_is_present &&
+			query_8.data4_is_present;
+	if (rmi4_data->f12_wakeup_gesture) {
+		rmi4_data->f12_ctrl20_addr = fhandler->full_addr.ctrl_base +
+				ctrl_8_offset +
+				query_5.ctrl8_is_present +
+				query_5.ctrl9_is_present +
+				query_5.ctrl10_is_present +
+				query_5.ctrl11_is_present +
+				query_5.ctrl12_is_present +
+				query_5.ctrl13_is_present +
+				query_5.ctrl14_is_present +
+				query_5.ctrl15_is_present +
+				query_5.ctrl16_is_present +
+				query_5.ctrl17_is_present +
+				query_5.ctrl18_is_present +
+				query_5.ctrl19_is_present;
+		rmi4_data->f12_ctrl27_addr = fhandler->full_addr.ctrl_base +
+				ctrl_23_offset +
+				query_5.ctrl23_is_present +
+				query_5.ctrl24_is_present +
+				query_5.ctrl25_is_present +
+				query_5.ctrl26_is_present;
+		rmi4_data->f12_data4_addr = fhandler->full_addr.data_base +
+				query_8.data0_is_present +
+				query_8.data1_is_present +
+				query_8.data2_is_present +
+				query_8.data3_is_present;
+	}
+#endif
 
 	if ((size_of_query8 >= 3) && (query_8.data15_is_present)) {
 		extra_data->data15_offset = query_8.data0_is_present +
@@ -3908,6 +4009,11 @@ static int synaptics_rmi4_probe(struct i2c_client *client,
 	set_bit(INPUT_PROP_DIRECT, rmi4_data->input_dev->propbit);
 #endif
 
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+	input_set_capability(rmi4_data->input_dev, EV_KEY, KEY_WAKEUP);
+	device_init_wakeup(&client->dev, true);
+#endif
+
 	retval = synaptics_rmi4_regulator_configure(rmi4_data, true);
 	if (retval < 0) {
 		dev_err(&client->dev, "Failed to configure regulators\n");
@@ -4373,6 +4479,8 @@ static int fb_notifier_callback(struct notifier_block *self,
 #ifdef CONFIG_WAKE_GESTURES
 			gestures_enabled = ((s2w_switch > 0) || (dt2w_switch > 0) ||
 				(camera_switch > 0)) && (!pwrkey_pressed);
+#elif defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
+			gestures_enabled = rmi4_data->enable_wakeup_gesture;
 #endif
 			synaptics_secure_touch_stop(rmi4_data, 0);
 		} else if (event == FB_EVENT_BLANK) {
@@ -4637,6 +4745,39 @@ static int synaptics_rmi4_check_configuration(struct synaptics_rmi4_data
 	return 0;
 }
 
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+static int synaptics_rmi4_f12_wakeup_gesture(
+		struct synaptics_rmi4_data *rmi4_data, bool enable)
+{
+	int retval;
+	unsigned char gesture_enables;
+	unsigned char reporting_control[3];
+
+	gesture_enables = enable ? F12_DOUBLE_TAP_ENABLE : 0;
+	retval = synaptics_rmi4_i2c_write(rmi4_data,
+			rmi4_data->f12_ctrl27_addr,
+			&gesture_enables,
+			sizeof(gesture_enables));
+	if (retval < 0)
+		return retval;
+
+	retval = synaptics_rmi4_i2c_read(rmi4_data,
+			rmi4_data->f12_ctrl20_addr,
+			reporting_control,
+			sizeof(reporting_control));
+	if (retval < 0)
+		return retval;
+
+	reporting_control[2] = enable ? F12_WAKEUP_GESTURE_MODE :
+			F12_CONTINUOUS_MODE;
+
+	return synaptics_rmi4_i2c_write(rmi4_data,
+			rmi4_data->f12_ctrl20_addr,
+			reporting_control,
+			sizeof(reporting_control));
+}
+#endif
+
 #ifdef CONFIG_WAKE_GESTURES
 static void s2w_enable(struct synaptics_rmi4_data *rmi4_data, bool enable)
 {
@@ -4672,6 +4813,20 @@ static int synaptics_rmi4_suspend(struct device *dev)
 	if (gestures_enabled) {
 		s2w_enable(rmi4_data, true);
 		return 0;
+	}
+#elif defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
+	if (rmi4_data->wakeup_gesture_active)
+		return 0;
+
+	if (gestures_enabled) {
+		synaptics_rmi4_release_all(rmi4_data);
+		retval = synaptics_rmi4_f12_wakeup_gesture(rmi4_data, true);
+		if (retval >= 0) {
+			rmi4_data->wakeup_gesture_active = true;
+			enable_irq_wake(rmi4_data->irq);
+			return 0;
+		}
+		dev_err(dev, "Failed to enable wakeup gesture\n");
 	}
 #endif
 	if (rmi4_data->stay_awake) {
@@ -4768,6 +4923,15 @@ static int synaptics_rmi4_resume(struct device *dev)
 	if (gestures_enabled) {
 		s2w_enable(rmi4_data, false);
 		goto out;
+	}
+#elif defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
+	if (rmi4_data->wakeup_gesture_active) {
+		disable_irq_wake(rmi4_data->irq);
+		rmi4_data->wakeup_gesture_active = false;
+		if (synaptics_rmi4_f12_wakeup_gesture(rmi4_data, false) < 0)
+			queue_work(rmi4_data->det_workqueue,
+					&rmi4_data->recovery_work);
+		return 0;
 	}
 #endif
 

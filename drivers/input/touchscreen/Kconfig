@@ -989,6 +989,17 @@ config TOUCHSCREEN_SYNAPTICS_I2C_RMI4
 	  To compile this driver as a module, choose M here: the
 	  module will be called synaptics_i2c_rmi4.
 
+config TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE
+	bool "Synaptics DSX firmware double-tap wake gesture"
+	depends on TOUCHSCREEN_SYNAPTICS_I2C_RMI4=y && !WAKE_GESTURES
+	help
+	  Say Y here to let the touch controller firmware detect a
+	  double tap while the display is off and report KEY_WAKEUP.
+	  It uses the F12 wakeup gesture registers and is controlled
+	  through the wake_gesture attribute of the I2C device.
+
+	  If unsure, say N.
+
 config TOUCHSCREEN_SYNAPTICS_DSX_RMI4_DEV
 	tristate "Synaptics I2C touchscreen rmi device"
 	depends on TOUCHSCREEN_SYNAPTICS_I2C_RMI4

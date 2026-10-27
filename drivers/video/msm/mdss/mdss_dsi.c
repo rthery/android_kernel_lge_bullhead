@@ -31,6 +31,8 @@
 
 #ifdef CONFIG_WAKE_GESTURES
 #include <linux/wake_gestures.h>
+#elif defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
+#include <linux/input/synaptics_dsx.h>
 #endif
 
 #define XO_CLK_RATE	19200000
@@ -188,7 +190,7 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 		udelay(2000);
 	}
 
-#ifdef CONFIG_WAKE_GESTURES
+#if defined(CONFIG_WAKE_GESTURES) || defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
 	if (!gestures_enabled) {
 #endif
 		for (i = DSI_MAX_PM - 1; i >= 0; i--) {
@@ -205,7 +207,7 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 				pr_err("%s: failed to disable vregs for %s\n",
 					__func__, __mdss_dsi_pm_name(i));
 		}
-#ifdef CONFIG_WAKE_GESTURES
+#if defined(CONFIG_WAKE_GESTURES) || defined(CONFIG_TOUCHSCREEN_SYNAPTICS_WAKEUP_GESTURE)
 	}
 #endif
 
