@@ -57,6 +57,8 @@
 #include <wlan_nlink_common.h>
 #include <net/genetlink.h>
 #include <net/cnss_nl.h>
+
+#define WLAN_CLD80211_MAX_SIZE (SKB_WITH_OVERHEAD(8192UL) - NLMSG_HDRLEN)
 #endif
 
 /* Global variables */
@@ -257,7 +259,17 @@ static int send_msg_to_cld80211(enum cld80211_multicast_groups cld_mcgroup_id,
 	if (in_interrupt() || irqs_disabled() || in_atomic())
 		flags = GFP_ATOMIC;
 
-	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, flags);
+	if (len > NLMSG_DEFAULT_SIZE) {
+		if (len > WLAN_CLD80211_MAX_SIZE) {
+			VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+				"buf size:%d is more than max size: %d",
+				len, (int) WLAN_CLD80211_MAX_SIZE);
+			return -ENOMEM;
+		}
+		msg = nlmsg_new(WLAN_CLD80211_MAX_SIZE, flags);
+	} else {
+		msg = nlmsg_new(NLMSG_DEFAULT_SIZE, flags);
+	}
 	if (!msg) {
 		VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
 						"nlmsg malloc fails");
@@ -294,20 +306,17 @@ int nl_srv_bcast(struct sk_buff *skb, int mcgroup_id, int app_id)
 	struct nlmsghdr *nlh = (struct nlmsghdr *)skb->data;
 	void *msg = NLMSG_DATA(nlh);
 	uint32_t msg_len = nlmsg_len(nlh);
-	uint8_t *tempbuf;
 	int status;
 
-	tempbuf = (uint8_t *)vos_mem_malloc(msg_len);
-	vos_mem_copy(tempbuf, msg, msg_len);
-	status = send_msg_to_cld80211(mcgroup_id, 0, app_id, tempbuf, msg_len);
+	status = send_msg_to_cld80211(mcgroup_id, 0, app_id, msg, msg_len);
 	if (status) {
 		VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
 			"send msg to cld80211 fails for app id %d", app_id);
+		dev_kfree_skb(skb);
 		return -EPERM;
 	}
 
 	dev_kfree_skb(skb);
-	vos_mem_free(tempbuf);
 	return 0;
 }
 
@@ -332,21 +341,18 @@ int nl_srv_ucast(struct sk_buff *skb, int dst_pid, int flag,
 	struct nlmsghdr *nlh = (struct nlmsghdr *)skb->data;
 	void *msg = NLMSG_DATA(nlh);
 	uint32_t msg_len = nlmsg_len(nlh);
-	uint8_t *tempbuf;
 	int status;
 
-	tempbuf = (uint8_t *)vos_mem_malloc(msg_len);
-	vos_mem_copy(tempbuf, msg, msg_len);
 	status = send_msg_to_cld80211(mcgroup_id, dst_pid, app_id,
-					tempbuf, msg_len);
+					msg, msg_len);
 	if (status) {
 		VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
 			"send msg to cld80211 fails for app id %d", app_id);
+		dev_kfree_skb(skb);
 		return -EPERM;
 	}
 
 	dev_kfree_skb(skb);
-	vos_mem_free(tempbuf);
 	return 0;
 }
 
