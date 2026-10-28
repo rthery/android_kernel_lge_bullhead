@@ -3329,8 +3329,11 @@ static int binder_free_thread(struct binder_proc *proc,
 	 * descriptor being closed); ep_remove_waitqueue() holds an RCU read
 	 * lock, so we can be sure it's done after calling synchronize_rcu().
 	 */
-	if (thread->looper & BINDER_LOOPER_STATE_POLL)
+	if (thread->looper & BINDER_LOOPER_STATE_POLL) {
+		preempt_enable_no_resched();
 		synchronize_rcu();
+		preempt_disable();
+	}
 
 	if (send_reply)
 		binder_send_failed_reply(send_reply, BR_DEAD_REPLY);
