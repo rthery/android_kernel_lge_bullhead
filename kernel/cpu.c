@@ -19,6 +19,7 @@
 #include <linux/mutex.h>
 #include <linux/gfp.h>
 #include <linux/suspend.h>
+#include <linux/moduleparam.h>
 
 #include <trace/events/sched.h>
 
@@ -386,6 +387,46 @@ out:
 EXPORT_SYMBOL(cpu_down);
 #endif /*CONFIG_HOTPLUG_CPU*/
 
+/*
+ * CPUs that must never be brought up again, e.g. a faulty cluster.  The
+ * mask can be set once; cpu_up() and resume refuse these CPUs afterwards.
+ */
+static struct cpumask cpu_up_blocked;
+
+static int set_blocked_cpus(const char *val, const struct kernel_param *kp)
+{
+	struct cpumask mask;
+	int ret;
+
+	ret = cpulist_parse(val, &mask);
+	if (ret)
+		return ret;
+
+	cpu_maps_update_begin();
+	if (!cpumask_empty(&cpu_up_blocked))
+		ret = -EPERM;
+	else
+		cpumask_copy(&cpu_up_blocked, &mask);
+	cpu_maps_update_done();
+	return ret;
+}
+
+static int get_blocked_cpus(char *buf, const struct kernel_param *kp)
+{
+	return cpulist_scnprintf(buf, PAGE_SIZE - 1, &cpu_up_blocked);
+}
+
+static const struct kernel_param_ops blocked_cpus_ops = {
+	.set = set_blocked_cpus,
+	.get = get_blocked_cpus,
+};
+module_param_cb(blocked_cpus, &blocked_cpus_ops, NULL, 0644);
+
+bool cpu_up_is_blocked(unsigned int cpu)
+{
+	return cpumask_test_cpu(cpu, &cpu_up_blocked);
+}
+
 /* Requires cpu_add_remove_lock to be held */
 static int __cpuinit _cpu_up(unsigned int cpu, int tasks_frozen)
 {
@@ -393,6 +434,9 @@ static int __cpuinit _cpu_up(unsigned int cpu, int tasks_frozen)
 	void *hcpu = (void *)(long)cpu;
 	unsigned long mod = tasks_frozen ? CPU_TASKS_FROZEN : 0;
 	struct task_struct *idle;
+
+	if (cpu_up_is_blocked(cpu))
+		return -EPERM;
 
 	cpu_hotplug_begin();
 
