@@ -458,6 +458,7 @@ int __cpuinit register_cpu(struct cpu *cpu, int num)
 	cpu->dev.release = cpu_device_release;
 	cpu->dev.of_node = of_get_cpu_node(num, NULL);
 	cpu->dev.offline_disabled = !cpu->hotpluggable;
+	cpu->dev.offline = !cpu_online(num);
 #ifdef CONFIG_GENERIC_CPU_AUTOPROBE
 	cpu->dev.bus->uevent = cpu_uevent;
 #endif
@@ -554,10 +555,35 @@ static void __init cpu_dev_register_generic(void)
 #endif
 }
 
+/*
+ * Drivers such as msm_thermal call cpu_up() and cpu_down() directly, which
+ * bypasses device_online() and device_offline().  Track those changes so
+ * the sysfs online attribute keeps matching the real state.
+ */
+static int __cpuinit cpu_dev_hotplug_callback(struct notifier_block *nb,
+					      unsigned long action, void *hcpu)
+{
+	struct device *dev = get_cpu_device((long)hcpu);
+
+	if (!dev)
+		return NOTIFY_OK;
+
+	switch (action & ~CPU_TASKS_FROZEN) {
+	case CPU_ONLINE:
+		dev->offline = false;
+		break;
+	case CPU_DEAD:
+		dev->offline = true;
+		break;
+	}
+	return NOTIFY_OK;
+}
+
 void __init cpu_dev_init(void)
 {
 	if (subsys_system_register(&cpu_subsys, cpu_root_attr_groups))
 		panic("Failed to register CPU subsystem");
 
 	cpu_dev_register_generic();
+	hotcpu_notifier(cpu_dev_hotplug_callback, 0);
 }
