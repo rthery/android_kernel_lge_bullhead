@@ -1131,8 +1131,7 @@ static void update_cpu_topology(struct device *dev)
 static int __ref init_cluster_freq_table(void)
 {
 	uint32_t _cluster = 0, _cpu = 0, table_len = 0, idx = 0;
-	int ret = 0, cpu_set;
-	char buf[CPU_BUF_SIZE];
+	int ret = 0;
 	struct cluster_info *cluster_ptr = NULL;
 	struct cpufreq_policy *policy = NULL;
 	struct cpufreq_frequency_table *freq_table_ptr = NULL;
@@ -1158,29 +1157,20 @@ static int __ref init_cluster_freq_table(void)
 			}
 		}
 		if (!freq_table_ptr) {
-			_cpu = first_cpu(cluster_ptr->cluster_cores);
-			pr_debug(
-			"Online cpu%d in cluster%d to read cpufreq table\n",
-				cluster_ptr->cluster_id, _cpu);
-			pending_cpu_freq = _cpu;
-			if (!cpu_online(_cpu)) {
-				cpu_set = cpumask_test_cpu(_cpu,
-						cpus_previously_online);
-#ifdef CONFIG_SMP
-				cpu_up(_cpu);
-				cpu_down(_cpu);
-#endif
-				/* Remove prev online bit if we are first to
-				   put it online */
-				if (!cpu_set) {
-					cpumask_clear_cpu(_cpu,
-						cpus_previously_online);
-					cpumask_scnprintf(buf, sizeof(buf),
-						cpus_previously_online);
-					pr_debug("Reset prev online to %s\n",
-						 buf);
-				}
+			/*
+			 * Do not power up an offline cluster just to read its
+			 * table: the CPUFREQ_CREATE_POLICY notifier records it
+			 * once the cluster comes online.  A cluster whose CPUs
+			 * may never come up needs no table.
+			 */
+			for_each_cpu_mask(_cpu, cluster_ptr->cluster_cores) {
+				if (!cpu_up_is_blocked(_cpu))
+					break;
 			}
+			if (_cpu >= nr_cpu_ids)
+				continue;
+			_cpu = first_cpu(cluster_ptr->cluster_cores);
+			pending_cpu_freq = _cpu;
 			freq_table_ptr = pending_freq_table_ptr;
 		}
 		if (!freq_table_ptr) {
