@@ -2137,10 +2137,12 @@ int kgsl_cmdbatch_add_memobj(struct kgsl_cmdbatch *cmdbatch,
 		if (cmdbatch->flags & KGSL_CMDBATCH_PROFILING &&
 			ibdesc->ctrl & KGSL_IBDESC_PROFILING_BUFFER &&
 			!cmdbatch->profiling_buf_entry) {
+			/* The whole profiling buffer must fit in the entry */
 			cmdbatch->profiling_buf_entry =
 				kgsl_sharedmem_find_region(
 				cmdbatch->context->proc_priv, mem->gpuaddr,
-				mem->sizedwords << 2);
+				max_t(size_t, mem->sizedwords << 2,
+				sizeof(struct kgsl_cmdbatch_profiling_buffer)));
 			if (!cmdbatch->profiling_buf_entry) {
 				WARN_ONCE(1,
 				"No mem entry for profiling buf, gpuaddr=%lx\n",
