@@ -2972,8 +2972,12 @@ static int kgsl_setup_useraddr(struct kgsl_mem_entry *entry,
 	entry->memdesc.pagetable = pagetable;
 	entry->memdesc.size = param->len;
 	entry->memdesc.useraddr = param->hostptr;
-	if (kgsl_memdesc_use_cpu_map(&entry->memdesc))
+	if (kgsl_memdesc_use_cpu_map(&entry->memdesc)) {
+		/* gpuaddr is 32 bits wide */
+		if (param->hostptr > UINT_MAX)
+			return -EINVAL;
 		entry->memdesc.gpuaddr = entry->memdesc.useraddr;
+	}
 	entry->memdesc.flags |= KGSL_MEMFLAGS_USERMEM_ADDR;
 
 	return memdesc_sg_virt(&entry->memdesc, NULL);
@@ -2990,6 +2994,10 @@ static int kgsl_setup_ashmem(struct kgsl_mem_entry *entry,
 
 	if (useraddr == 0 || !KGSL_IS_PAGE_ALIGNED(useraddr)
 		|| !KGSL_IS_PAGE_ALIGNED(size))
+		return -EINVAL;
+
+	/* gpuaddr is 32 bits wide */
+	if (kgsl_memdesc_use_cpu_map(&entry->memdesc) && useraddr > UINT_MAX)
 		return -EINVAL;
 
 	ret = get_ashmem_file(fd, &filep, &vmfile, &len);

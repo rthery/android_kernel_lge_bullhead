@@ -712,8 +712,9 @@ kgsl_mmu_get_gpuaddr(struct kgsl_pagetable *pagetable,
 	if (kgsl_memdesc_has_guard_page(memdesc))
 		size += kgsl_memdesc_guard_page_size(memdesc);
 
-	if (size < memdesc->size) {
-		memdesc->size = 0;
+	if (size <= 0 || (size_t) size < memdesc->size) {
+		if (kgsl_memdesc_use_cpu_map(memdesc))
+			memdesc->gpuaddr = 0;
 		return -EINVAL;
 	}
 	/*
@@ -723,16 +724,17 @@ kgsl_mmu_get_gpuaddr(struct kgsl_pagetable *pagetable,
 	 */
 
 	if (kgsl_memdesc_use_cpu_map(memdesc)) {
-		uint64_t end = memdesc->gpuaddr + size;
+		uint64_t end = (uint64_t) memdesc->gpuaddr + size;
 		if (memdesc->gpuaddr == 0)
 			return -EINVAL;
 
 		/*
 		 * Validate the GPU address range for memory mapping request
-		 * for user allocated buffers before setting the bitmap.
+		 * for user allocated buffers before setting the bitmap, which
+		 * only covers the SVM range.
 		 */
-		if ((end >= (KGSL_MMU_GLOBAL_MEM_BASE - SZ_1M)) ||
-				(end <  memdesc->gpuaddr)) {
+		if (memdesc->gpuaddr < KGSL_SVM_LOWER_BOUND ||
+				end > KGSL_SVM_UPPER_BOUND) {
 			memdesc->gpuaddr = 0;
 			return -EINVAL;
 		}
