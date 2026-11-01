@@ -213,6 +213,7 @@ kgsl_mem_entry_create(void)
 		kref_init(&entry->refcount);
 		/* put this ref in the caller functions after init */
 		kref_get(&entry->refcount);
+		RB_CLEAR_NODE(&entry->node);
 	}
 
 	return entry;
@@ -395,7 +396,11 @@ kgsl_mem_entry_untrack_gpuaddr(struct kgsl_process_private *process,
 	if (entry->memdesc.gpuaddr) {
 		kgsl_mmu_put_gpuaddr(entry->memdesc.pagetable,
 					&entry->memdesc);
-		rb_erase(&entry->node, &entry->priv->mem_rb);
+		/* Not in mem_rb if kgsl_mmu_map() failed before the commit */
+		if (!RB_EMPTY_NODE(&entry->node)) {
+			rb_erase(&entry->node, &entry->priv->mem_rb);
+			RB_CLEAR_NODE(&entry->node);
+		}
 	}
 }
 
