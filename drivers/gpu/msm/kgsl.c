@@ -2823,6 +2823,26 @@ static int check_vma(struct vm_area_struct *vma, struct file *vmfile,
 	return check_vma_flags(vma, memdesc->flags);
 }
 
+static bool check_vma_range(unsigned long hostptr, size_t size)
+{
+	struct vm_area_struct *vma;
+	unsigned long cur = hostptr;
+
+	while (cur < (hostptr + size)) {
+		vma = find_vma(current->mm, cur);
+		if (!vma)
+			return false;
+
+		/* Don't remap memory that we already own */
+		if (vma->vm_file && vma->vm_file->f_op == &kgsl_fops)
+			return false;
+
+		cur = vma->vm_end;
+	}
+
+	return true;
+}
+
 static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, struct file *vmfile)
 {
 	int ret = 0;
@@ -2852,6 +2872,8 @@ static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, struct file *vmfile)
 	if (vmfile != NULL)
 		ret = check_vma(find_vma(current->mm, memdesc->useraddr),
 				vmfile, memdesc);
+	else if (!check_vma_range(memdesc->useraddr, memdesc->size))
+		ret = -EFAULT;
 
 	if (ret == 0) {
 		npages = get_user_pages(current, current->mm, memdesc->useraddr,
