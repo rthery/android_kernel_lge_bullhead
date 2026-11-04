@@ -14068,6 +14068,10 @@ eHalStatus csrSendJoinReqMsg( tpAniSirGlobal pMac, tANI_U32 sessionId, tSirBssDe
            !(pProfile->MFPRequired) && ((pIes->RSN.present) &&
            (!(pIes->RSN.RSN_Cap[0] >> 7) & 0x1)))
             dwTmp = pal_cpu_to_be32(eSIR_ED_NONE);
+        /* Optional PMF arrives without MFPEnabled; MFPC on both sides still negotiates PMF */
+        if (!pProfile->MFPEnabled && pProfile->MFPCapable &&
+           pIes->RSN.present && ((pIes->RSN.RSN_Cap[0] >> 7) & 0x1))
+            dwTmp = pal_cpu_to_be32(eSIR_ED_AES_128_CMAC);
         vos_mem_copy(pBuf, &dwTmp, sizeof(tANI_U32));
         pBuf += sizeof(tANI_U32);
 #endif
