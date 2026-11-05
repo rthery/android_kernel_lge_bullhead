@@ -80,6 +80,7 @@ static inline struct new_utsname *utsname(void)
             !strcmp(current->comm, "zygote") ||
 	    !strcmp(current->comm, "bpfloader") ||
             !strcmp(current->comm, "netbpfload") ||
+	    !strcmp(current->comm, "netd") ||
             !strcmp(current->comm, "perfetto") ||
             !strcmp(current->comm, "init"))
 	{
@@ -87,7 +88,8 @@ static inline struct new_utsname *utsname(void)
 		char fake_release_prepended[64];
 
 		if (!strcmp(current->comm, "bpfloader") ||
-			!strcmp(current->comm, "netbpfload"))
+		    !strcmp(current->comm, "netbpfload") ||
+		    !strcmp(current->comm, "netd"))
 			strcpy(fake_release_prepended, CONFIG_ANDROID_TREBLE_SPOOF_BPF_KERNEL_VERSION_PREFIX);
 		else
 			strcpy(fake_release_prepended, CONFIG_ANDROID_TREBLE_SPOOF_KERNEL_VERSION_PREFIX);
