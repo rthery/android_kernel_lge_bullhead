@@ -77,6 +77,7 @@ static inline void prandom_seed_state(struct rnd_state *state, u64 seed)
 	state->s1 = __seed(i, 2);
 	state->s2 = __seed(i, 8);
 	state->s3 = __seed(i, 16);
+	state->s4 = __seed(i, 128);
 }
 
 #ifdef CONFIG_ARCH_RANDOM
