@@ -2993,11 +2993,72 @@ void bpf_warn_invalid_xdp_action(u32 act)
 }
 EXPORT_SYMBOL_GPL(bpf_warn_invalid_xdp_action);
 
+#define bpf_ctx_range_till(TYPE, MEMBER1, MEMBER2)				\
+	offsetof(TYPE, MEMBER1) ... offsetofend(TYPE, MEMBER2) - 1
+
 static bool sock_addr_is_valid_access(int off, int size,
 				      enum bpf_access_type type,
 				      const struct bpf_prog *prog,
 				      enum bpf_reg_type *reg_type)
 {
+	if (off < 0 || off >= sizeof(struct bpf_sock_addr))
+		return false;
+	/* Narrow and wide accesses are not supported: the verifier only
+	 * converts 4-byte context loads and stores here.
+	 */
+	if (off % sizeof(__u32) != 0 || size != sizeof(__u32))
+		return false;
+
+	/* Disallow access to IPv6 fields from IPv4 contex and vise
+	 * versa.
+	 */
+	switch (off) {
+	case offsetof(struct bpf_sock_addr, user_ip4):
+		switch (prog->expected_attach_type) {
+		case BPF_CGROUP_INET4_BIND:
+		case BPF_CGROUP_INET4_CONNECT:
+		case BPF_CGROUP_UDP4_SENDMSG:
+		case BPF_CGROUP_UDP4_RECVMSG:
+			break;
+		default:
+			return false;
+		}
+		break;
+	case bpf_ctx_range_till(struct bpf_sock_addr, user_ip6[0], user_ip6[3]):
+		switch (prog->expected_attach_type) {
+		case BPF_CGROUP_INET6_BIND:
+		case BPF_CGROUP_INET6_CONNECT:
+		case BPF_CGROUP_UDP6_SENDMSG:
+		case BPF_CGROUP_UDP6_RECVMSG:
+			break;
+		default:
+			return false;
+		}
+		break;
+	case offsetof(struct bpf_sock_addr, msg_src_ip4):
+		if (prog->expected_attach_type != BPF_CGROUP_UDP4_SENDMSG)
+			return false;
+		break;
+	case bpf_ctx_range_till(struct bpf_sock_addr, msg_src_ip6[0],
+				msg_src_ip6[3]):
+		if (prog->expected_attach_type != BPF_CGROUP_UDP6_SENDMSG)
+			return false;
+		break;
+	}
+
+	switch (off) {
+	case offsetof(struct bpf_sock_addr, user_ip4):
+	case bpf_ctx_range_till(struct bpf_sock_addr, user_ip6[0], user_ip6[3]):
+	case offsetof(struct bpf_sock_addr, msg_src_ip4):
+	case bpf_ctx_range_till(struct bpf_sock_addr, msg_src_ip6[0],
+				msg_src_ip6[3]):
+	case offsetof(struct bpf_sock_addr, user_port):
+		break;
+	default:
+		if (type != BPF_READ)
+			return false;
+	}
+
 	return true;
 }
 
@@ -3245,12 +3306,73 @@ static u32 xdp_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 	return insn - insn_buf;
 }
 
-#define bpf_ctx_range_till(TYPE, MEMBER1, MEMBER2)				\
-	offsetof(TYPE, MEMBER1) ... offsetofend(TYPE, MEMBER2) - 1
+/* SOCK_ADDR_LOAD_NESTED_FIELD() loads Nested Field S.F.NF where S is type of
+ * context Structure, F is Field in context structure that contains a pointer
+ * to Nested Structure of type NS that has the field NF.
+ *
+ * SIZE encodes the load size (BPF_B, BPF_H, etc). It's up to caller to make
+ * sure that SIZE is not greater than actual size of S.F.NF.
+ *
+ * If offset OFF is provided, the load happens from that offset relative to
+ * offset of NF.
+ */
+#define SOCK_ADDR_LOAD_NESTED_FIELD_SIZE_OFF(S, NS, F, NF, SIZE, OFF)	       \
+	do {								       \
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(S, F), dst_reg,	       \
+				      src_reg, offsetof(S, F));		       \
+		*insn++ = BPF_LDX_MEM(SIZE, dst_reg, dst_reg,		       \
+				      offsetof(NS, NF) + OFF);		       \
+	} while (0)
+
+#define SOCK_ADDR_LOAD_NESTED_FIELD(S, NS, F, NF)			       \
+	SOCK_ADDR_LOAD_NESTED_FIELD_SIZE_OFF(S, NS, F, NF,		       \
+					     BPF_FIELD_SIZEOF(NS, NF), 0)
+
+/* SOCK_ADDR_STORE_NESTED_FIELD_OFF() has semantic similar to
+ * SOCK_ADDR_LOAD_NESTED_FIELD_SIZE_OFF() but for store operation.
+ *
+ * In addition it uses Temporary Field TF (member of struct S) as the 3rd
+ * "register" since two registers available in convert_ctx_access are not
+ * enough: we can't override neither SRC, since it contains value to store, nor
+ * DST since it contains pointer to context that may be used by later
+ * instructions. But we need a temporary place to save pointer to nested
+ * structure whose field we want to store to.
+ */
+#define SOCK_ADDR_STORE_NESTED_FIELD_OFF(S, NS, F, NF, SIZE, OFF, TF)	       \
+	do {								       \
+		int tmp_reg = BPF_REG_9;				       \
+		if (src_reg == tmp_reg || dst_reg == tmp_reg)		       \
+			--tmp_reg;					       \
+		if (src_reg == tmp_reg || dst_reg == tmp_reg)		       \
+			--tmp_reg;					       \
+		*insn++ = BPF_STX_MEM(BPF_DW, dst_reg, tmp_reg,		       \
+				      offsetof(S, TF));			       \
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(S, F), tmp_reg,	       \
+				      dst_reg, offsetof(S, F));		       \
+		*insn++ = BPF_STX_MEM(SIZE, tmp_reg, src_reg,		       \
+				      offsetof(NS, NF) + OFF);		       \
+		*insn++ = BPF_LDX_MEM(BPF_DW, tmp_reg, dst_reg,		       \
+				      offsetof(S, TF));			       \
+	} while (0)
+
+#define SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD_SIZE_OFF(S, NS, F, NF, SIZE, OFF, \
+						      TF)		       \
+	do {								       \
+		if (type == BPF_WRITE) {				       \
+			SOCK_ADDR_STORE_NESTED_FIELD_OFF(S, NS, F, NF, SIZE,   \
+							 OFF, TF);	       \
+		} else {						       \
+			SOCK_ADDR_LOAD_NESTED_FIELD_SIZE_OFF(		       \
+				S, NS, F, NF, SIZE, OFF);		       \
+		}							       \
+	} while (0)
+
+#define SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD(S, NS, F, NF, TF)		       \
+	SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD_SIZE_OFF(			       \
+		S, NS, F, NF, BPF_FIELD_SIZEOF(NS, NF), 0, TF)
 
 static u32 sock_addr_convert_ctx_access(enum bpf_access_type type,
-				  int dst_reg, int src_reg,
-					  int ctx_off,
+					int dst_reg, int src_reg, int ctx_off,
 					struct bpf_insn *insn_buf,
 					struct bpf_prog *prog)
 {
@@ -3259,49 +3381,22 @@ static u32 sock_addr_convert_ctx_access(enum bpf_access_type type,
 
 	switch (ctx_off) {
 	case offsetof(struct bpf_sock_addr, user_family):
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), dst_reg,
-				      src_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sockaddr, sa_family));
-
+		SOCK_ADDR_LOAD_NESTED_FIELD(struct bpf_sock_addr_kern,
+					    struct sockaddr, uaddr, sa_family);
 		break;
 
 	case offsetof(struct bpf_sock_addr, user_ip4):
-		if (type == BPF_WRITE) {
-			int tmp_reg = BPF_REG_9;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			*insn++ = BPF_STX_MEM(BPF_DW, dst_reg, tmp_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-			*insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct sockaddr_in, sin_addr), tmp_reg, src_reg,
-				offsetof(struct sockaddr_in, sin_addr));
-			*insn++ = BPF_LDX_MEM(BPF_DW, tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-		} else {
-			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sockaddr_in, sin_addr));
-		}
+		SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD_SIZE_OFF(
+			struct bpf_sock_addr_kern, struct sockaddr_in, uaddr,
+			sin_addr, BPF_W, 0, tmp_reg);
 		break;
 
 	case bpf_ctx_range_till(struct bpf_sock_addr, user_ip6[0], user_ip6[3]):
 		off = ctx_off;
 		off -= offsetof(struct bpf_sock_addr, user_ip6[0]);
-
-		if (type == BPF_WRITE) {
-			int tmp_reg = BPF_REG_9;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			*insn++ = BPF_STX_MEM(BPF_DW, dst_reg, tmp_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-			*insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct sockaddr_in6, sin6_addr.s6_addr32[0]), tmp_reg, src_reg,
-				offsetof(struct sockaddr_in6, sin6_addr.s6_addr32[0]));
-			*insn++ = BPF_LDX_MEM(BPF_DW, tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-		} else {
-			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sockaddr_in6, sin6_addr.s6_addr32[0]));
-		}
+		SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD_SIZE_OFF(
+			struct bpf_sock_addr_kern, struct sockaddr_in6, uaddr,
+			sin6_addr.s6_addr32[0], BPF_W, off, tmp_reg);
 		break;
 
 	case offsetof(struct bpf_sock_addr, user_port):
@@ -3316,63 +3411,37 @@ static u32 sock_addr_convert_ctx_access(enum bpf_access_type type,
 			     offsetof(struct sockaddr_in6, sin6_port));
 		BUILD_BUG_ON(FIELD_SIZEOF(struct sockaddr_in, sin_port) !=
 			     FIELD_SIZEOF(struct sockaddr_in6, sin6_port));
-
-		if (type == BPF_WRITE) {
-			int tmp_reg = BPF_REG_9;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			*insn++ = BPF_STX_MEM(BPF_DW, dst_reg, tmp_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-			*insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct sockaddr_in6, sin6_port), tmp_reg, src_reg, offsetof(struct sockaddr_in6, sin6_port));
-			*insn++ = BPF_LDX_MEM(BPF_DW, tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-		} else {
-			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, uaddr), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, uaddr));
-			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sockaddr_in6, sin6_port));
-		}
-
+		SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD(struct bpf_sock_addr_kern,
+						     struct sockaddr_in6, uaddr,
+						     sin6_port, tmp_reg);
 		break;
 
 	case offsetof(struct bpf_sock_addr, family):
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, sk), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, sk));
-		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sock, sk_family));
-
+		SOCK_ADDR_LOAD_NESTED_FIELD(struct bpf_sock_addr_kern,
+					    struct sock, sk, sk_family);
 		break;
 
 	case offsetof(struct bpf_sock_addr, type):
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, sk), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, sk));
-		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sock, sk_write_queue) + sizeof(struct sk_buff_head));
-
+		SOCK_ADDR_LOAD_NESTED_FIELD_SIZE_OFF(
+			struct bpf_sock_addr_kern, struct sock, sk,
+			__sk_flags_offset, BPF_W, 0);
 		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, SK_FL_TYPE_MASK);
 		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, SK_FL_TYPE_SHIFT);
 		break;
 
 	case offsetof(struct bpf_sock_addr, protocol):
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, sk), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, sk));
-		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct sock, sk_write_queue) + sizeof(struct sk_buff_head));
-
+		SOCK_ADDR_LOAD_NESTED_FIELD_SIZE_OFF(
+			struct bpf_sock_addr_kern, struct sock, sk,
+			__sk_flags_offset, BPF_W, 0);
 		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, SK_FL_PROTO_MASK);
-		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg,
-					SK_FL_PROTO_SHIFT);
+		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, SK_FL_PROTO_SHIFT);
 		break;
 
 	case offsetof(struct bpf_sock_addr, msg_src_ip4):
 		/* Treat t_ctx as struct in_addr for msg_src_ip4. */
-		if (type == BPF_WRITE) {
-			int tmp_reg = BPF_REG_9;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-                        *insn++ = BPF_STX_MEM(BPF_DW, dst_reg, tmp_reg, offsetof(struct bpf_sock_addr_kern, t_ctx));
-                        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, t_ctx), tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, t_ctx));
-                        *insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct in_addr, s_addr), tmp_reg, src_reg, offsetof(struct in_addr, s_addr));
-                        *insn++ = BPF_LDX_MEM(BPF_DW, tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-		} else {
-                        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, t_ctx), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, t_ctx));
-                        *insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct in_addr, s_addr));
-		}
+		SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD_SIZE_OFF(
+			struct bpf_sock_addr_kern, struct in_addr, t_ctx,
+			s_addr, BPF_W, 0, tmp_reg);
 		break;
 
 	case bpf_ctx_range_till(struct bpf_sock_addr, msg_src_ip6[0],
@@ -3380,20 +3449,9 @@ static u32 sock_addr_convert_ctx_access(enum bpf_access_type type,
 		off = ctx_off;
 		off -= offsetof(struct bpf_sock_addr, msg_src_ip6[0]);
 		/* Treat t_ctx as struct in6_addr for msg_src_ip6. */
-		if (type == BPF_WRITE) {
-			int tmp_reg = BPF_REG_9;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-			if (src_reg == tmp_reg || dst_reg == tmp_reg)
-				--tmp_reg;
-                        *insn++ = BPF_STX_MEM(BPF_DW, dst_reg, tmp_reg, offsetof(struct bpf_sock_addr_kern, t_ctx));
-                        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, t_ctx), tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, t_ctx));
-                        *insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct in6_addr, s6_addr32[0]), tmp_reg, src_reg, offsetof(struct in6_addr, s6_addr32[0]));
-                        *insn++ = BPF_LDX_MEM(BPF_DW, tmp_reg, dst_reg, offsetof(struct bpf_sock_addr_kern, tmp_reg));
-		} else {
-                        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sock_addr_kern, t_ctx), dst_reg, src_reg, offsetof(struct bpf_sock_addr_kern, t_ctx));
-                        *insn++ = BPF_LDX_MEM(BPF_W, dst_reg, dst_reg, offsetof(struct in6_addr, s6_addr32[0]));
-		}
+		SOCK_ADDR_LOAD_OR_STORE_NESTED_FIELD_SIZE_OFF(
+			struct bpf_sock_addr_kern, struct in6_addr, t_ctx,
+			s6_addr32[0], BPF_W, off, tmp_reg);
 		break;
 	}
 
