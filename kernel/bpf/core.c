@@ -312,6 +312,7 @@ static void bpf_jit_uncharge_modmem(u32 pages)
 	atomic_long_sub(pages, &bpf_jit_current);
 }
 
+#ifdef CONFIG_MODULES
 void *__weak bpf_jit_alloc_exec(unsigned long size)
 {
 	return module_alloc(size);
@@ -321,6 +322,17 @@ void __weak bpf_jit_free_exec(void *addr)
 {
 	module_memfree(addr);
 }
+#else
+void *__weak bpf_jit_alloc_exec(unsigned long size)
+{
+	return NULL;
+}
+
+void __weak bpf_jit_free_exec(void *addr)
+{
+	vfree(addr);
+}
+#endif
 
 #if IS_ENABLED(CONFIG_BPF_JIT) && IS_ENABLED(CONFIG_CFI_CLANG)
 bool __weak arch_bpf_jit_check_func(const struct bpf_prog *prog)
