@@ -1504,6 +1504,8 @@ static int bpf_map_get_info_by_fd(struct bpf_map *map,
 	info.value_size = map->value_size;
 	info.max_entries = map->max_entries;
 	info.map_flags = map->map_flags;
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
+		info.map_flags |= BPF_F_RDONLY_PROG;
 
 	if (copy_to_user(uinfo, &info, info_len) ||
 	    put_user(info_len, &uattr->info.info_len))

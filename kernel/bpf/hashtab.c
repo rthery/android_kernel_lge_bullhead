@@ -831,10 +831,40 @@ static struct bpf_map_type_list htab_percpu_type __read_mostly = {
 	.type = BPF_MAP_TYPE_PERCPU_HASH,
 };
 
+/* DEVMAP_HASH stand-in: only the userspace view (u32 key to u32 ifindex).
+ * There is no XDP redirect here, so programs may not use it.
+ */
+static struct bpf_map *dev_map_hash_alloc(union bpf_attr *attr)
+{
+	if (!capable(CAP_NET_ADMIN))
+		return ERR_PTR(-EPERM);
+
+	if (attr->key_size != 4 || attr->value_size != 4 ||
+	    attr->map_flags & ~BPF_F_NO_PREALLOC)
+		return ERR_PTR(-EINVAL);
+
+	return htab_map_alloc(attr);
+}
+
+static const struct bpf_map_ops dev_map_hash_ops = {
+	.map_alloc = dev_map_hash_alloc,
+	.map_free = htab_map_free,
+	.map_get_next_key = htab_map_get_next_key,
+	.map_lookup_elem = htab_map_lookup_elem,
+	.map_update_elem = htab_map_update_elem,
+	.map_delete_elem = htab_map_delete_elem,
+};
+
+static struct bpf_map_type_list dev_map_hash_type __read_mostly = {
+	.ops = &dev_map_hash_ops,
+	.type = BPF_MAP_TYPE_DEVMAP_HASH,
+};
+
 static int __init register_htab_map(void)
 {
 	bpf_register_map_type(&htab_type);
 	bpf_register_map_type(&htab_percpu_type);
+	bpf_register_map_type(&dev_map_hash_type);
 	return 0;
 }
 late_initcall(register_htab_map);

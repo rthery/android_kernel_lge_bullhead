@@ -1230,6 +1230,8 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 		    func_id != BPF_FUNC_current_task_under_cgroup)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_DEVMAP_HASH:
+		goto error;
 	default:
 		break;
 	}
