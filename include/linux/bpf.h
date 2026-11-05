@@ -44,6 +44,9 @@ struct bpf_map {
 	u32 map_flags;
 	u32 pages;
 	u32 id;
+	u32 btf_key_type_id;
+	u32 btf_value_type_id;
+	struct btf *btf;
 	bool unpriv_array;
 	struct user_struct *user;
 	const struct bpf_map_ops *ops;
