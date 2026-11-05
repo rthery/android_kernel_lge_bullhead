@@ -287,7 +287,7 @@ int bpf_get_file_flag(int flags)
 		   offsetof(union bpf_attr, CMD##_LAST_FIELD) - \
 		   sizeof(attr->CMD##_LAST_FIELD)) != NULL
 
-#define BPF_MAP_CREATE_LAST_FIELD map_flags
+#define BPF_MAP_CREATE_LAST_FIELD map_ifindex
 /* called via syscall */
 static int map_create(union bpf_attr *attr)
 {
@@ -297,6 +297,10 @@ static int map_create(union bpf_attr *attr)
 
 	err = CHECK_ATTR(BPF_MAP_CREATE);
 	if (err)
+		return -EINVAL;
+
+	/* map-in-map, NUMA placement and device offload are not supported */
+	if (attr->inner_map_fd || attr->numa_node || attr->map_ifindex)
 		return -EINVAL;
 
 	f_flags = bpf_get_file_flag(attr->map_flags);
