@@ -339,6 +339,11 @@ static inline int is_vmalloc_or_module_addr(const void *x)
 }
 #endif
 
+extern void *kvmalloc(size_t size, gfp_t flags);
+static inline void *kvzalloc(size_t size, gfp_t flags)
+{
+	return kvmalloc(size, flags | __GFP_ZERO);
+}
 extern void kvfree(const void *addr);
 
 static inline void compound_lock(struct page *page)
