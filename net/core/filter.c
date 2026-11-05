@@ -2880,6 +2880,9 @@ static bool sock_filter_is_valid_access(int off, int size,
 	/* The verifier guarantees that size > 0. */
 	if (off % size != 0)
 		return false;
+	/* Only 4-byte loads and stores are converted. */
+	if (size != sizeof(__u32))
+		return false;
 
 	return true;
 }
