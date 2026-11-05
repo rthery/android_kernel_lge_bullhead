@@ -2260,11 +2260,6 @@ static const struct bpf_func_proto bpf_skb_event_output_proto = {
 	.arg5_type	= ARG_CONST_STACK_SIZE,
 };
 
-static unsigned short bpf_tunnel_key_af(u64 flags)
-{
-	return 0;
-}
-
 BPF_CALL_4(bpf_skb_get_tunnel_key, struct sk_buff *, skb, struct bpf_tunnel_key *, to,
 	   u32, size, u64, flags)
 {
